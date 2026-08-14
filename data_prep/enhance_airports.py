@@ -9,7 +9,7 @@ import os
 import math
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WEBDATA = os.path.join(BASE, "web", "data")
+WEBDATA = os.path.join(BASE, "data")
 OUT = os.path.join(WEBDATA, "airports_enhanced.json")
 
 # Manual mapping ICAO -> province (GADM NAME_1) based on known ARP locations.

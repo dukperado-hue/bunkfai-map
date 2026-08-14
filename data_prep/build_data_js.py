@@ -8,12 +8,12 @@ import os
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RES = os.path.join(os.path.dirname(BASE), "research")
-OUT = os.path.join(BASE, "web", "data.js")
+OUT = os.path.join(BASE, "data.js")
 
 
 def load(name, use_web_data=False):
     path = (
-        os.path.join(BASE, "web", "data", name) if use_web_data
+        os.path.join(BASE, "data", name) if use_web_data
         else os.path.join(RES, name)
     )
     with open(path, encoding="utf-8") as f:

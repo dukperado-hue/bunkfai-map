@@ -22,7 +22,8 @@ jobs:
       - uses: actions/configure-pages@v4
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: ./web
+          # Site root is the repo root (flattened). .nojekyll disables Jekyll processing.
+          path: ./
   deploy:
     environment:
       name: github-pages

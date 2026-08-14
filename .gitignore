@@ -1,7 +1,0 @@
-# Real CAAT bird-strike incident data — internal/sensitive, do not publish.
-gee/incident_data.csv
-gee/incident_data.js
-
-# OS cruft
-Thumbs.db
-.DS_Store
