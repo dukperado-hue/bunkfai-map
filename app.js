@@ -487,8 +487,10 @@ function renderPetition() {
   var peak = Math.round(simulatePeak(typeKey));
   var fallout = falloutKm(typeKey).toFixed(1);
 
+  var amphoeSel = document.getElementById('pet-amphoe');
+  var amphoeTh = amphoeSel && amphoeSel.value ? document.querySelector('#pet-amphoe option:checked').text : '';
   var parts = [];
-  if (useDistrict && d) parts.push('🏛️ ที่ทำการอำเภอ/องค์กรปกครองส่วนท้องถิ่น — ' + (d.authority || 'ตามประกาศจังหวัด'));;
+  if (useDistrict && d) parts.push('🏛️ ที่ทำการอำเภอ' + (amphoeTh ? ' ' + amphoeTh : '') + '/องค์กรปกครองส่วนท้องถิ่น — ' + (d.authority || 'ตามประกาศจังหวัด'));;
   if (useAirport) parts.push('✈️ ผู้จัดการ/หอบังคับการบิน (ATC) — ' + (hits.length ? hits[0].icao : 'ท่าอากาศยานใกล้ชิด'));;
   if (usePolice) parts.push('👮 สภ.ตำบล/อำเภอที่เกี่ยวข้อง (รับทราบ)');;
 
@@ -496,11 +498,11 @@ function renderPetition() {
     '<div style="font-family: \'Sarabun\', \'Tahoma\', sans-serif; padding: 18px; background:#fff; color:#111; max-width: 640px; margin: 0 auto;">' +
     '<h3 style="text-align:center; margin:0 0 16px 0">คำร้องขออนุญาตจด/ปล่อยบั้งไฟ โคมลอย พลุ</h3>' +
     '<div style="text-align:right; font-size:13px; margin-bottom: 14px">ลงวันที่ ' + dateStr + '</div>' +
-    '<p style="font-size:13.5px; line-height:1.65; text-align:justify">เรียน ' + (useDistrict && d ? 'นายอำเภอ/นายกองค์กรปกครองส่วนท้องถิ่น ' + (rec ? rec.th : '') : 'เจ้าหน้าที่ที่เกี่ยวข้อง') + ' (เรียนท่าน) และ/หรือ ผู้จัดการ/หอบังคับการบินท่าอากาศยาน' + (hits.length ? ' ' + hits[0].icao + ' ' + hits[0].nameTh : '') + '</p>' +
+    '<p style="font-size:13.5px; line-height:1.65; text-align:justify">เรียน ' + (useDistrict && d ? 'นายอำเภอ' + (amphoeTh ? ' ' + amphoeTh : '') + (rec ? ' จังหวัด' + rec.th : '') + '/นายกองค์กรปกครองส่วนท้องถิ่น ' + (amphoeTh ? '' + amphoeTh : (rec ? rec.th : '')) : 'เจ้าหน้าที่ที่เกี่ยวข้อง') + ' (เรียนท่าน) และ/หรือ ผู้จัดการ/หอบังคับการบินท่าอากาศยาน' + (hits.length ? ' ' + hits[0].icao + ' ' + hits[0].nameTh : '') + '</p>' +
     '<p style="font-size:13.5px; line-height:1.65; text-align:justify">ข้าพเจ้า ' + name + ' อาชีพ/ที่อยู่ ' + addr + ' ขอเรียนมาเพื่อยื่นคำร้องขออนุญาตจด/ปล่อยวัตถุขึ้นอากาศประเภท ' + t.label + ' ในการจัดกิจกรรม ' + eventName + ' ณ วันที่ ' + eventDate + '</p>';
   if (lat !== null) {
     html += '<p style="font-size:13.5px; line-height:1.65; text-align:justify">พิกัดตำแหน่งที่ขอ: ละติจูด ' + lat.toFixed(5) + ' ลองติจูด ' + lon.toFixed(5) +
-      (rec ? ' (ท้องที่ ' + rec.th + ' ' + rec.region + ')' : '') +
+      (rec ? ' (ท้องที่' + (amphoeTh ? ' อำเภอ' + amphoeTh : '') + ' จังหวัด' + rec.th + ' ' + rec.region + ')' : '') +
       (hits.length ? ' — ตรวจสอบพบว่าอยู่ใน ' + hits[0].zoneLabel + ' ห่างจาก ' + hits[0].icao + ' ' + hits[0].distKm.toFixed(1) + ' กม.' : ' — ตรวจสอบระบบไม่พบว่าอยู่ในเขตปลอดัยทางการเดินอากาศ LHZ 10 กม./PHZ ของสนามบินใด') + '</p>';
   }
   html +=
@@ -529,6 +531,8 @@ var lastPin = null;
 function openPetitionModal(pt) {
   if (pt) lastPin = pt;
   populatePetitionSelect();
+  var pk = pt ? findProvince(pt) : selectedProvinceKey;
+  if (pk && document.getElementById('pet-amphoe')) populatePetitionAmphoe(pk);
   var modal = document.getElementById('petition-modal');
   modal.style.display = 'flex';
   var st = document.getElementById('pet-status');
@@ -544,7 +548,10 @@ function openPetitionModal(pt) {
   }
   document.getElementById('pet-generate').onclick = function () {
     document.getElementById('petition-body').innerHTML = renderPetition();
-    st.textContent = 'สร้างคำร้องแล้ว — กด "🖨 พิมพ์/บันทึก PDF" หรือ "📋 คัดลอกข้อความ" เพื่อส่งหน่วยงาน';
+    var saved = savePermitFromPetition();
+    st.textContent = saved
+      ? 'สร้างคำร้องแล้ว — บันทึกเข้ารายการ "คำขอที่ส่งแล้ว" แล้ว (สถานะรอยืน) — กด "🖨 พิมพ์/บันทึก PDF" หรือ "📋 คัดลอกข้อความ" เพื่อส่งหน่วยงาน'
+      : 'สร้างคำร้องแล้ว — กด "🖨 พิมพ์/บันทึก PDF" หรือ "📋 คัดลอกข้อความ" เพื่อส่งหน่วยงาน';
   };
   document.getElementById('pet-print').onclick = function () {
     var w = window.open('', '_blank');
@@ -684,7 +691,7 @@ function openOccurrenceForm(pt, provKey, rec, hits) {
   oc.dataset.ctx = JSON.stringify({ provKey: provKey, rec: rec, hits: hits });
 }
 
-function saveOccurrence() {
+function saveOccurrenceWithTiming() {
   var oc = document.getElementById('occurrence-form');
   var lat = parseFloat(document.getElementById('occ-lat').value);
   var lon = parseFloat(document.getElementById('occ-lon').value);
@@ -696,6 +703,8 @@ function saveOccurrence() {
     lat: lat, lon: lon, kind: kind,
     date: document.getElementById('occ-date').value || new Date().toISOString().slice(0, 10),
     note: note,
+    startAt: document.getElementById('occ-start').value || null,
+    endAt: document.getElementById('occ-end').value || null,
     airportNear: (ctx.hits && ctx.hits.length) ? ctx.hits[0].icao + ' (' + ctx.hits[0].zoneType + ' ~' + ctx.hits[0].distKm.toFixed(1) + ' กม.)' : '',
     provTh: ctx.rec ? ctx.rec.th : '',
     ts: Date.now()
@@ -745,12 +754,299 @@ function updateOccurrenceStats() {
 }
 
 function wireOccurrenceForm() {
-  document.getElementById('occ-save').addEventListener('click', saveOccurrence);
+  document.getElementById('occ-save').addEventListener('click', function () {
+    saveOccurrenceWithTiming();
+  });
+  document.getElementById('occ-start-now').addEventListener('click', function () {
+    var iso = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    document.getElementById('occ-start').value = iso;
+  });
+  document.getElementById('occ-end-now').addEventListener('click', function () {
+    var iso = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    document.getElementById('occ-end').value = iso;
+  });
   document.getElementById('occ-cancel').addEventListener('click', function () {
     document.getElementById('occurrence-form').style.display = 'none';
     document.getElementById('occurrence-panel').style.display = 'none';
   });
   document.getElementById('toggle-heat').addEventListener('change', updateHeatmap);
+}
+
+// ---------------------------------------------------------------------------
+// Amphoe (district) system — data from DOPA กรมการปกครอง (AMPHOES in amphoes.js)
+// ---------------------------------------------------------------------------
+
+function populateAmphoeSelect(key) {
+  var sel = document.getElementById('amphoe-select');
+  var list = (window.AMPHOES && AMPHOES[key]) || [];
+  sel.innerHTML = '';
+  if (list.length === 0) { sel.style.display = 'none'; return; }
+  sel.style.display = 'block';
+  sel.appendChild(new Option('เลือกอำเภอ/เขต...', ''));
+  list.forEach(function (a) { sel.appendChild(new Option(a.th + ' (' + a.en + ')', a.en)); });
+  var pet = document.getElementById('pet-amphoe');
+  if (pet) { populatePetitionAmphoe(key); }
+}
+
+function populatePetitionAmphoe(key) {
+  var pet = document.getElementById('pet-amphoe');
+  var list = (window.AMPHOES && AMPHOES[key]) || [];
+  pet.innerHTML = '';
+  if (list.length === 0) { pet.style.display = 'none'; return; }
+  pet.style.display = 'block';
+  pet.appendChild(new Option('เลือกอำเภอ/เขตที่จด/ปล่อย...', ''));
+  list.forEach(function (a) { pet.appendChild(new Option(a.th, a.en)); });
+}
+
+function getAmphoeInfo(provKey, amphoeEn) {
+  var list = (window.AMPHOES && AMPHOES[provKey]) || [];
+  var a = list.find(function (x) { return x.en === amphoeEn; });
+  return a || null;
+}
+
+function showAmphoeCard(provKey, amphoeEn) {
+  var card = document.getElementById('amphoe-card');
+  var rec = PROV_REF.find(function (r) { return r.en === provKey; });
+  var d = provKey ? (PROV_DATA[provKey] || null) : null;
+  var a = getAmphoeInfo(provKey, amphoeEn);
+  if (!rec || !a) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  var list = AMPHOES[provKey];
+  var html = '<div class="card-province" style="font-size:14px">🏛️ ' + a.th + '<span class="card-region"> — ' + rec.th + ' ' + rec.region + '</span></div>';
+  html += '<div class="card-row"><span class="card-label">ท้องที่</span><span>อำเภอ/เขต ' + a.th + ' จังหวัด' + rec.th + ' ' + rec.region + '</span></div>';
+  if (d) {
+    if (d.authority) html += '<div class="card-row"><span class="card-label">ผู้อนุญาต</span><span>' + d.authority + '</span></div>';
+    if (d.permit) html += '<div class="card-row"><span class="card-label">เงื่อนไข</span><span>' + d.permit + '</span></div>';
+    if (d.applyDaysAdvance) html += '<div class="card-row"><span class="card-label">ยื่นขอล่วงหน้า</span><span>≥ ' + d.applyDaysAdvance + ' วัน</span></div>';
+  }
+  html += '<div class="card-row"><span class="card-label">จำนวนอำเภอ</span><span>' + list.length + ' อำเภอ/เขต (ใน' + rec.th + ')</span></div>';
+  html += '<div class="card-row"><span class="card-label">ฐานอำนาจ</span><span>พ.ร.บ.การเดินอากาศ พ.ศ. 2497 ม.59 + ประกาศจังหวัด' + rec.th + '</span></div>';
+  if (d && d.docPath) html += '<div class="card-row"><span class="card-label">เอกสาร</span><span><a href="' + d.docPath + '" target="_blank" class="card-link">📄 เปิดเอกสารประกาศ PDF</a></span></div>';
+  html += '<div class="card-note">การจด/ปล่อยบั๊งบึงไฟ โคมลอย พลุ ในท้องที่อำเภอ/เขตนี้ ให้เป็นไปตามเงื่อนไขของประกาศจังหวัดข้างต้น — ใช้เป็นข้อมูลประกอบการยื่นคำขอกับอำเภอ/อปท.</div>';
+  html += '<div class="card-row" style="border:none"><button class="tool-btn" id="petition-from-amphoe">📮 ยื่นคำร้องแจ้งหน่วยงาน (จากอำเภอ/เขตนี้)</button></div>';
+  card.innerHTML = html;
+  setTimeout(function () {
+    var btn = document.getElementById('petition-from-amphoe');
+    if (btn) btn.addEventListener('click', function () { openPetitionModal(lastPin || null); });
+  }, 0);
+}
+
+function wireAmphoe() {
+  var sel = document.getElementById('amphoe-select');
+  sel.addEventListener('change', function () {
+    var key = sel.value;
+    if (!key) { document.getElementById('amphoe-card').style.display = 'none'; return; }
+    showAmphoeCard(selectedProvinceKey, key);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Permit requests store + status + permit PDF issuance (Bampen-style)
+// ---------------------------------------------------------------------------
+
+var permits = [];
+
+function loadPermits() {
+  try {
+    var raw = localStorage.getItem('bunkfai_permits');
+    permits = raw ? JSON.parse(raw) : [];
+  } catch (e) { permits = []; }
+}
+
+function savePermits() {
+  localStorage.setItem('bunkfai_permits', JSON.stringify(permits));
+}
+
+function nextPermitNo() {
+  var d = new Date();
+  var seq = permits.filter(function (p) { return p.no && p.no.indexOf('BF-' + (d.getFullYear() + 543)) === 0; }).length + 1;
+  return 'BF-' + (d.getFullYear() + 543) + '-' + ('000' + seq).slice(-4);
+}
+
+function changePermitStatus(id, status) {
+  var p = permits.find(function (x) { return x.id === id; });
+  if (!p) return;
+  p.status = status;
+  p.updatedAt = Date.now();
+  savePermits();
+  renderPermitsList();
+  updateOccurrenceStats();
+  if (status === 'approved' || status === 'rejected') { document.getElementById('dashboard-body') && renderDashboard(); }
+}
+
+function renderPermitCard(p) {
+  var prov = PROV_REF.find(function (r) { return r.en === p.provKey; });
+  var type = BUNFAI_TYPES[p.typeKey] || { label: '' };
+  var stCls = p.status === 'approved' ? 'st-approved' : (p.status === 'rejected' ? 'st-rejected' : 'st-pending');
+  var stTxt = p.status === 'approved' ? 'ออนุญาตแล้ว' : (p.status === 'rejected' ? 'ไม่ผ่านการอนุญาต' : 'รอยื่น/รอยินยอม');
+  var html = '<div class="permit-card">' +
+    '<div class="pc-head"><span><b>' + (prov ? prov.th : '') + '</b> — ' + type.label + (p.amphoeTh ? ' / อำเภอ' + p.amphoeTh : '') + '</span>' +
+    '<span class="pc-type">' + p.no + '</span></div>' +
+    '<div style="margin:3px 0;color:#555">ผู้ยื่น: ' + (p.name || '—') + (p.event ? ' · กิจกรรม ' + p.event : '') + (p.eventDate ? ' · ' + p.eventDate : '') + '</div>' +
+    '<div style="margin:3px 0"><span class="' + stCls + '">' + stTxt + '</span> · สถานะ: <select class="status-select" data-id="' + p.id + '">' +
+    '<option value="pending"' + (p.status === 'pending' ? ' selected' : '') + '>รอยื่น/รอยินยอม</option>' +
+    '<option value="approved"' + (p.status === 'approved' ? ' selected' : '') + '>ออนุญาตแล้ว</option>' +
+    '<option value="rejected"' + (p.status === 'rejected' ? ' selected' : '') + '>ไม่ผ่านการอนุญาต</option></select>' +
+    (p.status === 'approved' ? ' <button class="permit-tool-btn" data-permit="' + p.id + '">📄 ออกใบอนุญาต (PDF)</button>' : '') +
+    ' <button class="permit-tool-btn" data-del="' + p.id + '">🗑 ลบ</button></div></div>';
+  return html;
+}
+
+function renderPermitsList() {
+  var el = document.getElementById('permits-list');
+  if (!el) return;
+  if (permits.length === 0) { el.innerHTML = '<div style="color:#666;font-size:12px">ยังไม่มีคำขอที่ส่ง — ใช้ปุ่ม "📮 เขียนคำร้อง" และกด "📝 สร้างคำร้อง" ระบบจะบันทึกอัตโนมัติ</div>'; return; }
+  var sorted = permits.slice().sort(function (a, b) { return b.createdAt - a.createdAt; });
+  el.innerHTML = sorted.map(renderPermitCard).join('');
+  el.querySelectorAll('.status-select').forEach(function (s) {
+    s.addEventListener('change', function () { changePermitStatus(s.dataset.id, s.value); });
+  });
+  el.querySelectorAll('[data-permit]').forEach(function (b) {
+    b.addEventListener('click', function () { openPermitModal(b.dataset.permit); });
+  });
+  el.querySelectorAll('[data-del]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (confirm('ลบคำขอนี้?')) {
+        permits = permits.filter(function (x) { return x.id !== b.dataset.del; });
+        savePermits(); renderPermitsList(); updateOccurrenceStats();
+      }
+    });
+  });
+}
+
+function savePermitFromPetition() {
+  var name = document.getElementById('pet-name').value || '';
+  var provKey = lastPin ? findProvince(lastPin) : selectedProvinceKey;
+  if (!name || !provKey) return null;
+  var p = {
+    id: 'P' + Date.now(),
+    no: nextPermitNo(),
+    createdAt: Date.now(),
+    status: 'pending',
+    provKey: provKey,
+    amphoeKey: document.getElementById('pet-amphoe') ? document.getElementById('pet-amphoe').value : '',
+    amphoeTh: document.getElementById('pet-amphoe') && document.getElementById('pet-amphoe').value
+      ? document.querySelector('#pet-amphoe option:checked').text : '',
+    name: name,
+    address: document.getElementById('pet-address').value || '',
+    event: document.getElementById('pet-event').value || '',
+    eventDate: document.getElementById('pet-date').value || '',
+    typeKey: document.getElementById('pet-type').value,
+    lat: lastPin ? lastPin[0] : null,
+    lon: lastPin ? lastPin[1] : null,
+    agencies: ['district'].concat(document.getElementById('pet-ag-airport').checked ? ['airport'] : [])
+      .concat(document.getElementById('pet-ag-police').checked ? ['police'] : [])
+  };
+  permits.push(p);
+  savePermits();
+  return p;
+}
+
+function openPermitModal(id) {
+  var p = permits.find(function (x) { return x.id === id; });
+  if (!p) return;
+  var prov = PROV_REF.find(function (r) { return r.en === p.provKey; });
+  var d = p.provKey ? (PROV_DATA[p.provKey] || null) : null;
+  var type = BUNFAI_TYPES[p.typeKey] || { label: '' };
+  var dateStr = new Date().getDate() + ' ' + ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'][new Date().getMonth()] + ' ' + (new Date().getFullYear() + 543);
+  var peak = (p.lat !== null && p.typeKey) ? Math.round(simulatePeak(p.typeKey)) : '—';
+  var html =
+    '<div style="font-family:\'Sarabun\',\'Tahoma\',sans-serif;padding:18px;background:#fff;color:#111;max-width:640px;margin:0 auto;">' +
+    '<div style="text-align:center;border-bottom:2px solid #2a3a5c;padding-bottom:10px;margin-bottom:12px">' +
+    '<div style="font-size:11px;color:#666">ราชอาณาจักรไทย</div>' +
+    '<div style="font-size:17px;font-weight:bold;margin:4px 0">ใบอนุญาตจด/ปล่อยวัตถุขึ้นอากาศ</div>' +
+    '<div style="font-size:12px">เลขที่ใบอนุญาต ' + p.no + '</div></div>' +
+    '<p style="font-size:13px;line-height:1.6;text-align:justify">ออกให้เมื่อวันที่ ' + dateStr + ' แก่ <b>' + (p.name || '—') + '</b> ตามคำร้องขอจด/ปล่อย' +
+    (p.event ? ' กิจกรรม "' + p.event + '"' : '') + (p.eventDate ? ' วันที่ ' + p.eventDate : '') + '</p>' +
+    '<p style="font-size:13px;line-height:1.6;text-align:justify">ชนิดวัตถุ: ' + type.label +
+    (peak !== '—' ? ' — ความสูงสูงสุดตามการจำลองวิถี ≈ ' + peak + ' ม.' : '') + '</p>' +
+    '<p style="font-size:13px;line-height:1.6;text-align:justify">พิกัดที่อนุญาต: ' + (p.lat !== null ? 'ละติจูด ' + p.lat.toFixed(5) + ' ลองติจูด ' + p.lon.toFixed(5) : '—') +
+    (prov ? ' ท้องที่ ' + (p.amphoeTh ? 'อำเภอ' + p.amphoeTh + ' ' : '') + 'จังหวัด' + prov.th + ' ' + prov.region : '') + '</p>';
+  if (d) {
+    if (d.permit) html += '<p style="font-size:13px;line-height:1.6;text-align:justify">เงื่อนไขตามประกาศ: ' + d.permit + '</p>';
+    if (d.authority) html += '<p style="font-size:13px;line-height:1.6">ผู้อนุญาต: ' + d.authority + '</p>';
+  }
+  html += '<p style="font-size:13px;line-height:1.6;text-align:justify">ผู้ได้รับใบอนุญาตต้องปฏิบัติตาม พ.ร.บ.การเดินอากาศ พ.ศ. 2497 มาตรา 59 และเงื่อนไขของประกาศจังหวัดอย่างเคร่งครัด หากเกิดความเสียหายต่อบุคคลหรือทรัพย์สิน ให้รับผิดชอบตามประมวลกฎหมายแพ่งและพาณิชย์ มาตรา 420</p>' +
+    '<div style="margin-top:24px;text-align:right;font-size:13px">(ลงชื่อ) ________________________<br>ผู้อำนวยการ/ผู้รับอนุญาต<br>วันที่ ' + dateStr + '</div>' +
+    '<div style="font-size:10.5px;color:#666;margin-top:10px;border-top:1px solid #ccc;padding-top:6px">เอกสารนี้ออกโดยระบบอัตโนมัติจากคำขอที่ได้รับการอนุญาตแล้วในเครื่อง — ใช้เป็นร่างประกอบสำเนาคำสั่งอนุญาตทางการ</div></div>';
+  document.getElementById('permit-body').innerHTML = html;
+  document.getElementById('permit-modal').style.display = 'flex';
+  document.getElementById('permit-modal').dataset.pid = id;
+}
+
+function wirePermits() {
+  document.getElementById('permits-open').addEventListener('click', function () {
+    renderPermitsList();
+    document.getElementById('permits-tab').style.display = 'flex';
+  });
+  document.getElementById('permits-close').addEventListener('click', function () { document.getElementById('permits-tab').style.display = 'none'; });
+  document.getElementById('permit-close').addEventListener('click', function () { document.getElementById('permit-modal').style.display = 'none'; });
+  document.getElementById('permit-print').addEventListener('click', function () {
+    var pid = document.getElementById('permit-modal').dataset.pid;
+    var w = window.open('', '_blank');
+    w.document.write('<html><head><title>ใบอนุญาตจด/ปล่อยวัตถุขึ้นอากาศ</title>' +
+      document.querySelector('link[href*="leaflet"]').outerHTML + '</head><body>' +
+      document.getElementById('permit-body').innerHTML + '</body></html>');
+    w.document.close(); w.focus(); w.print();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard (Bampen-style summary + season heatmap note)
+// ---------------------------------------------------------------------------
+
+function activeLaunches() {
+  return occurrences.filter(function (o) { return o.startAt && !o.endAt; });
+}
+
+function renderDashboard() {
+  var el = document.getElementById('dashboard-body');
+  var live = activeLaunches();
+  var unauth = occurrences.filter(function (o) { return o.kind === 'unauthorized'; }).length;
+  var inZone = occurrences.filter(function (o) { return o.airportNear; }).length;
+  var approved = permits.filter(function (p) { return p.status === 'approved'; }).length;
+  var rejected = permits.filter(function (p) { return p.status === 'rejected'; }).length;
+  var pending = permits.filter(function (p) { return p.status === 'pending'; }).length;
+  var byMonth = {};
+  occurrences.forEach(function (o) { var m = (o.date || '').slice(0, 7); if (m) byMonth[m] = (byMonth[m] || 0) + 1; });
+  var months = Object.keys(byMonth).sort();
+  var html = '<div>';
+  html += '<div style="margin-bottom:8px">' +
+    '<span class="dash-stat">คำขอทั้งหมด <b>' + permits.length + '</b></span>' +
+    '<span class="dash-stat">ออนุญาตแล้ว <b>' + approved + '</b></span>' +
+    '<span class="dash-stat">รอยื่น <b>' + pending + '</b></span>' +
+    '<span class="dash-stat">ไม่ผ่าน <b>' + rejected + '</b></span>' +
+    '<span class="dash-stat">เหตุการณ์ทั้งหมด <b>' + occurrences.length + '</b></span>' +
+    '<span class="dash-stat">ปล่อยไม่ได้รับอนุญาต <b>' + unauth + '</b></span>' +
+    '<span class="dash-stat">ในเขตปลอดัยฯ สนามบิน <b>' + inZone + '</b></span>' +
+    '<span class="dash-stat">⏱ <span class="live-launch">กำลังจดอยู่ ' + live.length + ' จุด</span></span>' +
+    '</div>';
+  if (live.length) {
+    html += '<div style="background:#e6f7f5;border:1px solid #2a9d8f;border-radius:4px;padding:6px 10px;margin-bottom:8px;font-size:12px">';
+    live.forEach(function (o) {
+      html += '• ' + (o.provTh || '') + ' ' + (o.note || '') + ' — เริ่ม ' + o.startAt.replace('T', ' ') + ' <a href="https://www.google.com/maps?q=' + o.lat + ',' + o.lon + '" target="_blank">[ดูตำแหน่ง]</a><br>';
+    });
+    html += '</div>';
+  }
+  html += '<div style="font-size:12.5px;margin:8px 0"><b>เหตุการณ์ตามเดือน (เชิงฤดูกาล)</b></div>';
+  if (months.length) {
+    var maxM = Math.max.apply(null, months.map(function (m) { return byMonth[m]; }));
+    months.forEach(function (m) {
+      var pct = Math.round((byMonth[m] / maxM) * 100);
+      html += '<div style="margin:2px 0;font-size:11.5px">' + m + ' <div style="display:inline-block;width:' + pct + 'px;height:10px;background:#e63946;vertical-align:middle"></div> ' + byMonth[m] + '</div>';
+    });
+  } else {
+    html += '<div style="color:#666">ยังไม่มีข้อมูล — เหตุการณ์ที่บันทึกสะสมจะแสดงเป็นแท่งรายเดือนเพื่อจับตาดูช่วงสูงสุดตามฤดูกาล (ปีใหม่/สงกรานต์/ลอยกระทง)</div>';
+  }
+  html += '<div style="font-size:12px;margin-top:10px;color:#555">Heatmap จุดเสี่ยงรอบสนามบิน: เปิดใช้ที่สวิตช์ "Heatmap จุดเสี่ยง (จาก Log)" — ข้อมูลนี้ใช้วางแผนลงพื้นที่ทำความเข้าใจกับชุมชนล่วงหน้า</div>';
+  html += '</div>';
+  el.innerHTML = html;
+  document.getElementById('dashboard-tab').style.display = 'flex';
+}
+
+function wireDashboard() {
+  document.getElementById('dashboard-open').addEventListener('click', function () { renderDashboard(); });
+  document.getElementById('dashboard-close').addEventListener('click', function () { document.getElementById('dashboard-tab').style.display = 'none'; });
 }
 
 // ---------------------------------------------------------------------------
@@ -786,6 +1082,9 @@ function filterProvinces() {
 function selectProvince(key) {
   selectedProvinceKey = key;
   var rec = PROV_REF.find(function (r) { return r.en === key; });
+  document.getElementById('amphoe-select').style.display = 'none';
+  document.getElementById('amphoe-card').style.display = 'none';
+  populateAmphoeSelect(key);
   restyleProvinces();
   var layer = provinceLayer.getLayers().find(function (l) {
     return provinceNameKey(l.feature.properties.NAME_1) === key;
@@ -919,6 +1218,7 @@ function buildGeeNote() {
 // ---------------------------------------------------------------------------
 
 loadOccurrences();
+loadPermits();
 buildRegionSelect();
 filterProvinces();
 buildProvinceLayer();
@@ -929,6 +1229,9 @@ wirePinDrop();
 wireSimulation();
 wireLetterButtons();
 wirePetitionButtons();
+wireAmphoe();
+wirePermits();
+wireDashboard();
 wireOccurrenceForm();
 updateOccurrenceStats();
 updateHeatmap();
