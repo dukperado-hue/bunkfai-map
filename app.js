@@ -490,9 +490,10 @@ function renderPetition() {
   var amphoeSel = document.getElementById('pet-amphoe');
   var amphoeTh = amphoeSel && amphoeSel.value ? document.querySelector('#pet-amphoe option:checked').text : '';
   var parts = [];
-  if (useDistrict && d) parts.push('🏛️ ที่ทำการอำเภอ' + (amphoeTh ? ' ' + amphoeTh : '') + '/องค์กรปกครองส่วนท้องถิ่น — ' + (d.authority || 'ตามประกาศจังหวัด'));;
-  if (useAirport) parts.push('✈️ ผู้จัดการ/หอบังคับการบิน (ATC) — ' + (hits.length ? hits[0].icao : 'ท่าอากาศยานใกล้ชิด'));;
-  if (usePolice) parts.push('👮 สภ.ตำบล/อำเภอที่เกี่ยวข้อง (รับทราบ)');;
+  var atcC = hits.length && typeof CONTACTS !== 'undefined' && CONTACTS.atc && CONTACTS.atc[hits[0].icao] ? CONTACTS.atc[hits[0].icao] : null;
+  if (useDistrict && d) parts.push('🏛️ ที่ทำการอำเภอ' + (amphoeTh ? ' ' + amphoeTh : '') + '/องค์กรปกครองส่วนท้องถิ่น — ' + (d.authority || 'ตามประกาศจังหวัด'));
+  if (useAirport) parts.push('✈️ ผู้จัดการ/หอบังคับการบิน (ATC)' + (hits.length ? ' ' + hits[0].icao + ' ' + hits[0].nameTh : '') + (atcC ? ' โทร ' + atcC.tel : ''));
+  if (usePolice) parts.push('👮 สภ.ตำบล/อำเภอที่เกี่ยวข้อง (รับทราบ) — สายด่วนตำรวจ 191');
 
   var html =
     '<div style="font-family: \'Sarabun\', \'Tahoma\', sans-serif; padding: 18px; background:#fff; color:#111; max-width: 640px; margin: 0 auto;">' +
@@ -514,6 +515,13 @@ function renderPetition() {
     '<p style="font-size:13.5px; line-height:1.65; text-align:right">(ลงชื่อ) ' + name + '</p>' +
     '<div class="section-title" style="color:#333">หน่วยงานที่ได้รับแจ้งตามคำร้องนี้</div>' +
     parts.map(function (p) { return '<div style="font-size:12.5px; line-height:1.55; margin:3px 0; color:#222">• ' + p + '</div>'; }).join('') +
+    (typeof CONTACTS !== 'undefined' && (atcC || true) ? ('<div class="section-title" style="color:#333; margin-top:10px">สำเนา: ช่องทางติดต่อหน่วยงาน (ข้อมูลสาธารณะ — โปรดตรวจสอบก่อนส่ง)</div>' +
+      (atcC ? '<div style="font-size:12px; line-height:1.5; margin:3px 0; padding:6px 8px; background:#f0f4ff; border:1px solid #c9d6ff; border-radius:4px"><b>✈️ ' + atcC.unit + '</b><br>โทร: ' + atcC.tel + (atcC.fax ? ' / โทรสาร: ' + atcC.fax : '') + (atcC.email ? '<br>อีเมล: ' + atcC.email : '') + '<br>ที่อยู่: ' + atcC.address + '</div>' : '<div style="font-size:11.5px; color:#666; margin:3px 0">ไม่พบข้อมูลติดต่อหอบังคับการบินของสนามบินใกล้เคียง — สอบถามสายด่วน 191</div>') +
+      (typeof CONTACTS !== 'undefined' && CONTACTS.aerothai ? '<div style="font-size:12px; line-height:1.5; margin:3px 0; padding:6px 8px; background:#f0fff4; border:1px solid #b7e4c7; border-radius:4px"><b>🛰️ สำเนาถึง: บริษัท วิทยุการบินแห่งประเทศไทย จำกัด (AeroThai)</b><br>โทร: ' + CONTACTS.aerothai.tel + ' / โทรสาร: ' + CONTACTS.aerothai.fax + '<br>ที่อยู่: ' + CONTACTS.aerothai.address + '<br>เว็บไซต์: ' + CONTACTS.aerothai.web + '</div>' : '') +
+      '<div style="font-size:12px; line-height:1.5; margin:3px 0; padding:6px 8px; background:#fff7e6; border:1px solid #ffe0a3; border-radius:4px"><b>📞 สายด่วน (กรณีฉุกเฉิน/เหตุไม่ปลอดภัย)</b><br>' +
+      '• สภ.ท้องที่ที่เกี่ยวข้อง — อำเภอ' + (amphoeTh ? ' ' + amphoeTh : '') + ': ติดต่อผ่านสายด่วน <b>191</b> หรือที่ทำการอำเภอ<br>' +
+      (typeof CONTACTS !== 'undefined' && CONTACTS.hotlines ? '• ' + CONTACTS.hotlines.amphoe + '<br>• ' + CONTACTS.hotlines.police + '<br>• ' + CONTACTS.hotlines.policeStation : '• ตำรวจ 191<br>• กรมป้องกันและบรรเทาสาธารณภัย 1784<br>• ศูนย์ดำรงธรรม 1567') +
+      '</div>') : '') +
     '<div style="font-size:11px; color:#666; margin-top:12px; border-top:1px solid #ccc; padding-top:6px">เอกสารนี้เป็นร่างอัตโนมัติจากระบบ — ต้องตรวจสอบความถูกต้องกับหน่วยงานปลายทางก่อนใช้เป็นทางการ</div>' +
     '</div>';
   return html;

@@ -1,0 +1,10 @@
+var vm = require('vm'), fs = require('fs');
+var ctx = { console: console, window: {} };
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync('./data.js', 'utf8'), ctx);
+vm.runInContext(fs.readFileSync('./contacts.js', 'utf8'), ctx);
+var a = ctx.AIRPORTS.map(function (x) { return x.icao; });
+var c = Object.keys(ctx.window.CONTACTS.atc);
+console.log('contacts keys:', c.length);
+console.log('airports without ATC contact:', a.filter(function (x) { return !c.includes(x); }).join(','));
+console.log('contacts for non-airports:', c.filter(function (x) { return !a.includes(x); }).join(','));
