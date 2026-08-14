@@ -77,6 +77,50 @@ def dest_point(lat, lon, bearing_deg, km):
     return math.degrees(lat2), math.degrees(lon2)
 
 
+def trapezoid(lat, lon, bearing, d0, d1, w0, w1):
+    """Trapezoid band segment along `bearing` from d0->d1 km with half-widths
+    w0/2 -> w1/2 (km) perpendicular to the runway axis (band model, like
+    birdheatmap)."""
+    perp1 = (bearing + 90) % 360
+    perp2 = (bearing - 90) % 360
+    p0 = dest_point(lat, lon, bearing, d0)
+    p1 = dest_point(lat, lon, bearing, d1)
+    c0a = dest_point(p0[0], p0[1], perp1, w0 / 2)
+    c0b = dest_point(p0[0], p0[1], perp2, w0 / 2)
+    c1a = dest_point(p1[0], p1[1], perp1, w1 / 2)
+    c1b = dest_point(p1[0], p1[1], perp2, w1 / 2)
+    return [(la, lo) for la, lo in [c0a, c1a, c1b, c0b]]
+
+
+def band_phz(ap):
+    """Band-based PHZ: 0-3 km corridor + 3-8 km corridor fanning out with
+    half-angle 15 degrees from the runway centreline (both directions)."""
+    brg = ap.get("rwyBearingDeg") or 0.0
+    lat, lon = ap["lat"], ap["lon"]
+    bands = []
+    # Band 1: 0-3 km corridor, half-width 0.5 -> 0.9 km
+    bands.append({
+        "nameTh": "PHZ Band 1 (0-3 กม. จาก ARP)",
+        "halfAngleDeg": 0.0,
+        "d0": 0, "d1": 3, "w0": 1.0, "w1": 1.8,
+        "rings": []})
+    # Band 2: 3-8 km corridor, fans out at 15 degrees half-angle
+    half = 15.0
+    w3 = 2 * 3.0 * math.tan(math.radians(half))  # half-width at 3 km = d*tan(15)
+    w8 = 2 * 8.0 * math.tan(math.radians(half))
+    bands.append({
+        "nameTh": "PHZ Band 2 (3-8 กม. จาก ARP, กางออก 15°)",
+        "halfAngleDeg": half,
+        "d0": 3, "d1": 8, "w0": w3, "w1": w8,
+        "rings": []})
+    for band in bands:
+        for sign in (1, -1):
+            b = brg if sign == 1 else (brg + 180) % 360
+            band["rings"].append(trapezoid(lat, lon, b, band["d0"], band["d1"],
+                                           band["w0"], band["w1"]))
+    return bands
+
+
 def airport_zones(ap):
     """Build LHZ 10km circle + runway approach bowtie polygons for an airport."""
     brg = ap.get("rwyBearingDeg") or 0.0
@@ -106,6 +150,9 @@ def airport_zones(ap):
                 "ring": [[(lat, lon), tl, tip, tr, (lat, lon)]],
                 "rule": "แนวขึ้น/ลงจริง — ห้ามปล่อยวัตถุเด็ดขาด (AOT/ผู้ให้บริการการเดินอากาศ)",
             }
+    # Band-based PHZ (new, replaces the single bowtie visually)
+    if ap.get("rwyBearingDeg") is not None:
+        zones["phz_bands"] = band_phz(ap)
     return zones
 
 

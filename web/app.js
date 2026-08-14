@@ -8,7 +8,11 @@
  *   - PROVINCES: Thailand ADM-1 boundaries (77 provinces), colored by region;
  *     click a province to view its regulation card.
  *   - AIRPORTS: AIP Thailand 2026-07-09 (43 ARP) with a 10 km Low Height
- *     Zone circle (standard provincial rule) + runway approach zones (PHZ).
+ *     Zone circle (standard provincial rule) + band-based runway approach
+ *     zones (PHZ Band 1 = 0-3 km corridor, Band 2 = 3-8 km fanning at 15°),
+ *     the same trapezoid math as the birdheatmap base repo.
+ *   - TOOLS: Pin Drop Clearance Check, Glide-Path Trajectory Simulator,
+ *     Administrative Response Letter generator, Occurrence Log + Heatmap.
  */
 
 // ---------------------------------------------------------------------------
@@ -29,13 +33,45 @@ function destPoint(lat, lon, bearingDeg, distKm) {
   return [lat2 * 180 / Math.PI, lon2 * 180 / Math.PI];
 }
 
+function haversineKm(a, b) {
+  var R = 6371.0;
+  var dLat = (b[0] - a[0]) * Math.PI / 180;
+  var dLon = (b[1] - a[1]) * Math.PI / 180;
+  var la1 = a[0] * Math.PI / 180, la2 = b[0] * Math.PI / 180;
+  var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// Bearing from a to b in degrees true.
+function bearingDeg(a, b) {
+  var dLon = (b[1] - a[1]) * Math.PI / 180;
+  var la1 = a[0] * Math.PI / 180, la2 = b[0] * Math.PI / 180;
+  var y = Math.sin(dLon) * Math.cos(la2);
+  var x = Math.cos(la1) * Math.sin(la2) - Math.sin(la1) * Math.cos(la2) * Math.cos(dLon);
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+}
+
+// Point-in-polygon ray-casting (flat approximation, fine at province scale).
+function pointInPoly(pt, poly) {
+  var inside = false;
+  for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    var xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    var intersect = ((yi > pt[1]) !== (yj > pt[1])) &&
+      (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi + 1e-12) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
 // Standard declaration per provincial proclamations: ห้ามจด/ปล่อยวัตถุขึ้นอากาศ
 // ในรัศมี 10 กม. จากท่าอากาศยาน เว้นแต่ได้รับอนุญาต — modeled as the LHZ circle.
 var LHZ_RADIUS_KM = 10;
 
 var ZONE_STYLE = {
   lhz: { color: '#c1121f', weight: 2, fill: true, fillColor: '#c1121f', fillOpacity: 0.14, dashArray: '6 4' },
-  phz: { color: '#99000d', weight: 1, fill: true, fillColor: '#e31a1c', fillOpacity: 0.55 }
+  phz1: { color: '#99000d', weight: 1, fill: true, fillColor: '#e31a1c', fillOpacity: 0.7 },
+  phz2: { color: '#780000', weight: 1, fill: true, fillColor: '#ff4d6d', fillOpacity: 0.55 }
 };
 
 var REGION_COLORS = {
@@ -61,12 +97,28 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 var provinceLayer = null;
-var airportLayer = L.layerGroup().addTo(map);
+var zoneLayerGroup = L.layerGroup().addTo(map);
+var toolLayerGroup = L.layerGroup().addTo(map);
+var pinMarker = null;
 var selectedProvinceKey = null;
+var pinDropMode = false;
+var occurrences = [];
+var heatLayer = null;
 
 function provinceNameKey(nameEn) {
   if (nameEn === 'Bangkok' || nameEn === 'Krung Thep Mahanakhon') return 'Bangkok Metropolis';
   return nameEn;
+}
+
+function loadOccurrences() {
+  try {
+    var raw = localStorage.getItem('bunkfai_occurrences');
+    occurrences = raw ? JSON.parse(raw) : [];
+  } catch (e) { occurrences = []; }
+}
+
+function saveOccurrences() {
+  localStorage.setItem('bunkfai_occurrences', JSON.stringify(occurrences));
 }
 
 // ---------------------------------------------------------------------------
@@ -112,52 +164,431 @@ function buildProvinceLayer() {
 }
 
 // ---------------------------------------------------------------------------
-// Airport layer
+// Airport layer — band-based PHZ (like birdheatmap trapezoid model)
 // ---------------------------------------------------------------------------
 
 function drawAirportZones(ap) {
-  airportLayer.clearLayers();
+  zoneLayerGroup.clearLayers();
   var lat = ap.lat, lon = ap.lon;
-  L.circle([lat, lon], { radius: LHZ_RADIUS_KM * 1000, ...ZONE_STYLE.lhz }).addTo(airportLayer);
-  var brg = ap.rwyBearingDeg;
-  if (brg != null) {
-    for (var sign of [1, -1]) {
-      var b = (brg + (sign > 0 ? 0 : 180)) % 360;
-      var tip = destPoint(lat, lon, b, 8);
-      var tl = destPoint(lat, lon, (b + 105) % 360, 2.5);
-      var tr = destPoint(lat, lon, (b + 75) % 360, 2.5);
-      L.polygon([[lat, lon], tl, tip, tr], ZONE_STYLE.phz).addTo(airportLayer);
+  if (document.getElementById('toggle-lhz').checked) {
+    L.circle([lat, lon], { radius: LHZ_RADIUS_KM * 1000, ...ZONE_STYLE.lhz }).addTo(zoneLayerGroup);
+  }
+  if (document.getElementById('toggle-phz').checked) {
+    var bands = (ap.zones && ap.zones.phz_bands) || null;
+    if (bands) {
+      bands.forEach(function (band) {
+        band.rings.forEach(function (ring) {
+          L.polygon(ring, band.d1 <= 3 ? ZONE_STYLE.phz1 : ZONE_STYLE.phz2).addTo(zoneLayerGroup);
+        });
+      });
+    } else {
+      // Legacy fallback: old simple bowtie
+      var brg = ap.rwyBearingDeg;
+      for (var sign of [1, -1]) {
+        var b = (brg + (sign > 0 ? 0 : 180)) % 360;
+        var tip = destPoint(lat, lon, b, 8);
+        var tl = destPoint(lat, lon, (b + 105) % 360, 2.5);
+        var tr = destPoint(lat, lon, (b + 75) % 360, 2.5);
+        L.polygon([[lat, lon], tl, tip, tr], ZONE_STYLE.phz1).addTo(zoneLayerGroup);
+      }
     }
   }
   L.circleMarker([lat, lon], { radius: 4, color: '#ffffff', weight: 2, fillColor: '#000000', fillOpacity: 1 })
     .bindTooltip(ap.icao + ' — ' + ap.nameTh, { permanent: false })
-    .addTo(airportLayer);
+    .addTo(zoneLayerGroup);
 }
 
-function buildAirportList() {
-  var list = document.getElementById('airport-list');
-  var sorted = AIRPORTS.slice().sort(function (a, b) { return a.icao.localeCompare(b.icao); });
-  sorted.forEach(function (ap) {
-    var el = document.createElement('div');
-    el.className = 'airport-item';
-    el.dataset.icao = ap.icao;
-    el.innerHTML = '<span class="icao">' + ap.icao + '</span>' +
-      '<span class="name">' + ap.nameTh + '</span>' +
-      '<span class="prov">' + ap.provinceTh + '</span>';
-    el.addEventListener('click', function () { selectAirport(ap); });
-    list.appendChild(el);
+// Test whether a point lies inside an airport's LHZ / PHZ bands.
+// Returns an array of { icao, zoneType, zoneLabel, distKm, rule } hits,
+// ordered by distance.
+function checkClearance(pt) {
+  var hits = [];
+  AIRPORTS.forEach(function (ap) {
+    var d = haversineKm(pt, [ap.lat, ap.lon]);
+    if (d <= LHZ_RADIUS_KM) {
+      hits.push({ icao: ap.icao, nameTh: ap.nameTh, zoneType: 'LHZ',
+        zoneLabel: 'เขตห้าม 10 กม. รอบท่าอากาศยาน (LHZ)', distKm: d,
+        rule: 'ห้ามจด/ปล่อยวัตถุขึ้นอากาศ เว้นแต่ได้รับอนุญาตจากผู้จัดการ/ผู้ประกอบท่าอากาศยาน' });
+    } else {
+      var bands = (ap.zones && ap.zones.phz_bands) || [];
+      var brg = ap.rwyBearingDeg;
+      var hitBand = null;
+      bands.forEach(function (band) {
+        if (hitBand || d < band.d0 || d > band.d1) return;
+        // Project point onto runway axis: angular distance check
+        var b1 = brg, b2 = (brg + 180) % 360;
+        for (var dir = 0; dir < 2; dir++) {
+          var b = dir === 0 ? b1 : b2;
+          var relBrg = (((bearingDeg([ap.lat, ap.lon], pt) - b + 540) % 360) - 180);
+          if (Math.abs(relBrg) > 90) continue;
+          var halfWidthKm = d * Math.tan(band.halfAngleDeg * Math.PI / 180);
+          if (band.d1 <= 3 && band.d0 === 0) {
+            // Band 1 is a corridor: width tapers w0..w1 with distance
+            halfWidthKm = (band.w0 + (band.w1 - band.w0) * d / band.d1) / 2;
+          }
+          var xDist = haversineKm([ap.lat, ap.lon], destPoint(ap.lat, ap.lon, b, d));
+          if (xDist < halfWidthKm) { hitBand = band; break; }
+        }
+      });
+      if (hitBand) {
+        hits.push({ icao: ap.icao, nameTh: ap.nameTh, zoneType: 'PHZ',
+          zoneLabel: hitBand.nameTh, distKm: d,
+          rule: 'แนวขึ้น-ลงเครื่องบิน (PHZ) — ห้ามปล่อยวัตถุเด็ดขาด' });
+      }
+    }
+  });
+  hits.sort(function (a, b) { return a.distKm - b.distKm; });
+  return hits;
+}
+
+function findProvince(pt) {
+  for (var i = 0; i < PROVINCES.features.length; i++) {
+    var f = PROVINCES.features[i];
+    var coords = f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates[0][0] : f.geometry.coordinates[0];
+    if (pointInPoly(pt, coords)) return provinceNameKey(f.properties.NAME_1);
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Pin drop mode
+// ---------------------------------------------------------------------------
+
+function wirePinDrop() {
+  var btn = document.getElementById('pin-drop-btn');
+  btn.addEventListener('click', function () {
+    pinDropMode = !pinDropMode;
+    btn.classList.toggle('active', pinDropMode);
+    btn.textContent = pinDropMode ? '✖ ยกเลิกโหมดปักหมุด' : '📍 ปักหมุดตรวจสอบ (Clearance Check)';
+    map.getContainer().style.cursor = pinDropMode ? 'crosshair' : '';
+    if (!pinDropMode && pinMarker) { pinMarker.remove(); pinMarker = null; }
+  });
+  map.on('click', function (e) {
+    if (!pinDropMode) return;
+    runClearanceCheck([e.latlng.lat, e.latlng.lng]);
   });
 }
 
-function selectAirport(ap) {
-  drawAirportZones(ap);
-  map.setView([ap.lat, ap.lon], 11);
-  document.querySelectorAll('.airport-item').forEach(function (el) {
-    el.classList.toggle('active', el.dataset.icao === ap.icao);
+function runClearanceCheck(pt) {
+  if (pinMarker) pinMarker.remove();
+  pinMarker = L.circleMarker(pt, { radius: 9, color: '#ffbe0b', weight: 3, fillColor: '#ffbe0b', fillOpacity: 0.9 }).addTo(toolLayerGroup);
+  map.setView(pt, Math.max(map.getZoom(), 10));
+
+  var hits = checkClearance(pt);
+  var provKey = findProvince(pt);
+  var rec = provKey ? PROV_REF.find(function (r) { return r.en === provKey; }) : null;
+  var d = provKey ? (PROV_DATA[provKey] || null) : null;
+
+  // Glide-path / trajectory context vs nearest airport
+  var nearest = hits.length ? hits[0] : null;
+  var simContext = nearest ? simContextFor(nearest, pt) : null;
+
+  var html =
+    '<div class="card-province">📍 พิกัดตรวจสอบ</div>' +
+    '<div class="card-row"><span class="card-label">ละติจูด</span><span>' + pt[0].toFixed(5) + '</span></div>' +
+    '<div class="card-row"><span class="card-label">ลองติจูด</span><span>' + pt[1].toFixed(5) + '</span></div>';
+  if (rec && d) {
+    html += '<div class="card-row"><span class="card-label">จังหวัด</span><span>' + rec.th + ' (' + rec.region + ')</span></div>';
+    html += '<div class="card-row"><span class="card-label">ยื่นขอล่วงหน้า</span><span>' + (d.applyDaysAdvance ? '≥ ' + d.applyDaysAdvance + ' วัน' : 'ตามประกาศจังหวัด') + '</span></div>';
+    html += '<div class="card-row"><span class="card-label">ผู้อนุญาต</span><span>' + (d.authority || 'ผู้จัดการ/ผู้ประกอบท่าอากาศยาน') + '</span></div>';
+    html += '<div class="card-row"><span class="card-label">เทศกาล</span><span>' + (d.festival || 'ทั่วไป') + '</span></div>';
+  } else {
+    html += '<div class="card-row"><span class="card-label">จังหวัด</span><span>ไม่สามารถระบุ (นอกผังประเทศ)</span></div>';
+  }
+  html += '<div class="section-title" style="margin-top:8px">สถานะทางน่านฟ้า</div>';
+  if (hits.length === 0) {
+    html += '<div class="stat-empty">✅ ไม่ติดเขตปลอดัยทางการเดินอากาศของทุกสนามบิน (อยู่นอก LHZ 10 กม. และ PHZ)</div>';
+  } else {
+    hits.slice(0, 5).forEach(function (h) {
+      html += '<div class="card-row"><span class="card-label">⛔ ' + h.zoneType + ' ' + h.icao + '</span><span>~' + h.distKm.toFixed(1) + ' กม. — ' + h.zoneLabel + '</span></div>';
+    });
+    html += '<div class="disclaimer">ติดเขต ⛔ = ห้ามจด/ปล่อยวัตถุขึ้นอากาศ เว้นแต่ได้รับอนุญาตจากท่าอากาศยาน</div>';
+  }
+  if (simContext) {
+    html += '<div class="section-title" style="margin-top:8px">บริบทแนวร่อน (3° Glide Slope)</div>';
+    html += '<div class="card-row"><span class="card-label">ระดับเครื่องบิน</span><span>~' + simContext.gsAltM + ' ม. TAE ณ ระยะ ' + simContext.distKm.toFixed(1) + ' กม. จาก ' + simContext.icao + '</span></div>';
+    html += '<div class="card-row"><span class="card-label">ข้อแนะนำ</span><span>' + simContext.advice + '</span></div>';
+  }
+  html += '<div class="card-row" style="border:none"><button class="tool-btn" id="letter-from-pin">📄 สร้างร่างหนังสือตอบกลับ</button> ' +
+    '<button class="tool-btn" id="log-from-pin">📝 บันทึกเป็นเหตุการณ์</button></div>';
+  document.getElementById('regulation-card').innerHTML = html;
+
+  // wire the two new buttons on the pin panel
+  setTimeout(function () {
+    var bl = document.getElementById('letter-from-pin');
+    if (bl) bl.addEventListener('click', function () {
+      openLetterModal({ lat: pt[0], lon: pt[1], provKey: provKey, rec: rec, d: d, hits: hits });
+    });
+    var bo = document.getElementById('log-from-pin');
+    if (bo) bo.addEventListener('click', function () {
+      openOccurrenceForm(pt, provKey, rec, hits);
+    });
+  }, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Glide-path trajectory simulation (conservative physics)
+// ---------------------------------------------------------------------------
+
+var BUNFAI_TYPES = {
+  'mun': { label: 'บั้งไฟหมื่น (≈ 10 กก.)', v0: 90, mass: 8, peakM: 600 },
+  'saen': { label: 'บั้งไฟแสน (≈ 100 กก.)', v0: 120, mass: 70, peakM: 1100 },
+  'lan': { label: 'บั้งไฟล้าน (≈ 1,000 กก.)', v0: 140, mass: 600, peakM: 1500 },
+  'plu': { label: 'พลุ / ตะไล', v0: 60, mass: 1, peakM: 300 },
+  'khom': { label: 'โคมลอย / โคมไฟ', v0: 15, mass: 0.3, peakM: 400 }
+};
+
+// Conservative ballistic simulation: gravity + quadratic drag,
+// peak via Euler integration (drag keeps peaks below vacuum estimate).
+function simulatePeak(typeKey) {
+  var t = BUNFAI_TYPES[typeKey];
+  var g = 9.81;
+  var rho = 1.1;              // air density kg/m3
+  var cd = 0.7;               // drag coeff (cylinder-ish)
+  var A = 0.02;               // cross-section m2 (conservative small)
+  var v = t.v0, z = 0, dz = 0.05, peak = 0;
+  while (v > 0.5 && z < 30000) {
+    var drag = 0.5 * rho * cd * A * v * v / t.mass;
+    v -= (g + drag) * dz;
+    z += v * dz;
+    if (z > peak) peak = z;
+    if (z <= 0 && v <= 0) break;
+  }
+  // Cap at the documented realistic peak for this type (no overestimate)
+  var cap = t.peakM * 1.1;
+  return Math.min(peak, cap);
+}
+
+// Fallout distance: ascent is vertical, descent drifts with wind.
+function falloutKm(peakM) {
+  // descent from peak at terminal-ish fall (~15 m/s) + horizontal wind 5 m/s
+  var fallTime = peakM / 15;
+  return fallTime * 5 / 1000;
+}
+
+function simContextFor(hit, pt) {
+  var ap = AIRPORTS.find(function (a) { return a.icao === hit.icao; });
+  if (!ap) return null;
+  var dKm = hit.distKm;
+  var gsAltM = Math.round(dKm * 1000 * Math.tan(3 * Math.PI / 180));
+  var advice = null;
+  if (hit.zoneType === 'PHZ') advice = 'อยู่ในแนวขึ้น-ลงเครื่องบิน — ระดับเครื่องบินต่ำกว่า ' + gsAltM + ' ม. ท่าอากาศยาน';
+  else if (dKm <= 5) advice = 'ใกล้ท่าอากาศยานมาก — ควรตรวจสอบกับหอบังคับการบินก่อนอนุญาตเสมอ';
+  else advice = 'นอกแนวร่อนหลัก — ติดต่อท่าอากาศยานเพื่อยืนยันก่อนอนุญาต';
+  return { icao: ap.icao, distKm: dKm, gsAltM: gsAltM, advice: advice };
+}
+
+function runSimulation() {
+  var typeKey = document.getElementById('sim-type').value;
+  var t = BUNFAI_TYPES[typeKey];
+  var peak = Math.round(simulatePeak(typeKey));
+  var fallout = falloutKm(peak).toFixed(1);
+  var doc = document.getElementById('sim-result');
+  doc.innerHTML =
+    '<div class="card-row"><span class="card-label">ความสูงสูงสุด (จำลอง)</span><span>≈ ' + peak + ' ม.</span></div>' +
+    '<div class="card-row"><span class="card-label">ระยะตก (ลม 5 ม./วิ)</span><span>≈ ' + fallout + ' กม.</span></div>' +
+    '<div class="card-row"><span class="card-label">แนวร่อน 3° ที่ 3 กม.</span><span>เครื่องบิน ≈ 157 ม. / ที่ 8 กม. ≈ 419 ม.</span></div>' +
+    '<div class="card-row"><span class="card-label">เกณฑ์เสี่ยง</span><span>Critical: วิถีทะลุแนวร่อนใน PHZ / High: ใน PHZ 3-8 กม. / Moderate: ใน LHZ / Low: นอกเขต</span></div>';
+  // re-evaluate pin if present
+  if (pinMarker) {
+    var ll = pinMarker.getLatLng();
+    runClearanceCheck([ll.lat, ll.lng]);
+  }
+}
+
+function wireSimulation() {
+  var sel = document.getElementById('sim-type');
+  Object.keys(BUNFAI_TYPES).forEach(function (k) {
+    sel.appendChild(new Option(BUNFAI_TYPES[k].label, k));
   });
-  document.getElementById('current-airport-label').textContent = ap.icao + ' — ' + ap.nameTh;
-  var rec = PROV_REF.find(function (r) { return r.en === ap.provinceEn; });
-  if (rec) { showRegulationCard(rec); }
+  sel.value = 'saen';
+  document.getElementById('sim-run').addEventListener('click', runSimulation);
+}
+
+// ---------------------------------------------------------------------------
+// Administrative response letter generator
+// ---------------------------------------------------------------------------
+
+function legalBasis(d, inZone) {
+  var lines = [];
+  lines.push('1. พระราชบัญญัติการเดินอากาศ พ.ศ. 2497 มาตรา 59 กำหนดให้บุคคลใดจะตั้ง วางหรือปล่อยวัตถุอันอาจเป็นอันตรายต่อการเดินอากาศมิได้ เว้นแต่ได้รับอนุญาตจากผู้จัดการหรือผู้ประกอบท่าอากาศยานหรือผู้ที่ได้รับมอบหมาย');
+  lines.push('2. มาตรา 113 กำหนดโทษผู้ฝ่าฝืนมาตรานี้ ต้องระวางโทษจำคุกไม่เกินหนึ่งปี หรือปรับไม่เกินสี่หมื่นบาท หรือทั้งจำทั้งปรับ');
+  if (d && d.applyDaysAdvance) {
+    lines.push('3. ประกาศจังหวัดกำหนดให้ยื่นคำขออนุญาตล่วงหน้าอย่างน้อย ' + d.applyDaysAdvance + ' วัน');
+  } else {
+    lines.push('3. ประกาศจังหวัดกำหนดให้ยื่นคำขออนุญาตล่วงหน้าตามขั้นตอนที่ระบุไว้ในประกาศฉบับนั้น ๆ');
+  }
+  if (inZone) {
+    lines.push('4. ตำแหน่งที่ขออยู่ในเขตปลอดัยทางการเดินอากาศของท่าอากาศยาน — การอนุญาตต้องได้รับความเห็นชอบจากผู้จัดการท่าอากาศยานก่อน');
+  }
+  lines.push('5. ตามประมวลกฎหมายแพ่งและพาณิชย์ มาตรา 420 หากการจด/ปล่อยวัตถุเป็นเหตุให้เกิดความเสียหายแก่บุคคลหรือทรัพย์สิน ผู้กระทำต้องรับผิดชดใช้ค่าสินไหมทดแทน (ความรับผิดทางละเมิด)');
+  return lines;
+}
+
+function renderLetter(cfg) {
+  var today = new Date();
+  var thaiMonths = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+    'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
+  var dateStr = today.getDate() + ' ' + thaiMonths[today.getMonth()] + ' ' + (today.getFullYear() + 543);
+  var applicant = document.getElementById('letter-applicant').value || '[ชื่อผู้ยื่นคำขอ/ผู้รับแจ้ง]';
+  var eventName = document.getElementById('letter-event').value || '[ชื่อกิจกรรม]';
+  var eventDate = document.getElementById('letter-date').value || '[วันที่งาน]';
+  var decision = document.getElementById('letter-decision').value; // allow | deny
+  var d = cfg.d, rec = cfg.rec, inZone = (cfg.hits.length > 0);
+  var bodyLines = [];
+  if (decision === 'allow') {
+    bodyLines.push('เรื่อง ให้อนุญาตการจด/ปล่อยบั้งไฟ พลุ ตะไล โคมลอย ตามคำขอยื่นลงวันที่ ' + eventDate);
+    bodyLines.push('องค์กรปกครองส่วนท้องถิ่นได้พิจารณาคำขอของ ' + applicant + ' เรื่อง ' + eventName + ' ณ ตำแหน่งที่ระบุแล้ว');
+    bodyLines.push('การพิจารณาอาศัยฐานอำนาจตามประกาศจังหวัด' + (rec ? ' ' + rec.th : '') + (d && d.title ? ' เรื่อง ' + d.title : '') +
+      ' ประกอบพระราชบัญญัติการเดินอากาศ พ.ศ. 2497');
+    if (inZone) bodyLines.push('เงื่อนไขสำคัญ: ต้องได้รับความเห็นชอบจากผู้จัดการท่าอากาศยานก่อน เนื่องจากตำแหน่งอยู่ในเขตปลอดัยทางการเดินอากาศ');
+    if (d && d.applyDaysAdvance) bodyLines.push('เงื่อนไข: ยื่นขอล่วงหน้า ≥ ' + d.applyDaysAdvance + ' วัน และแจ้งหอบังคับการบินตามที่ประกาศกำหนด');
+    bodyLines.push('ผู้อนุญาตมีหน้าที่ควบคุมให้การจด/ปล่อยเป็นไปตามมาตรการปลอดภัยที่กำหนด หากเกิดความเสียหายต่อบุคคลหรือทรัพย์สิน ผู้ขออนุญาตต้องรับผิดตามประมวลกฎหมายแพ่งและพาณิชย์ มาตรา 420');
+    bodyLines.push('ด้วยความเคารพ');
+  } else {
+    bodyLines.push('เรื่อง ไม่ให้อนุญาตการจด/ปล่อยบั้งไฟ พลุ ตะไล โคมลอย');
+    bodyLines.push('องค์กรปกครองส่วนท้องถิ่นได้พิจารณาคำขอของ ' + applicant + ' เรื่อง ' + eventName + ' ณ ตำแหน่งที่ระบุแล้ว');
+    bodyLines.push('เนื่องจากตำแหน่งที่ขออยู่ในเขตปลอดัยทางการเดินอากาศของท่าอากาศยาน ซึ่งกฎหมายห้ามจด/ปล่อยวัตถุขึ้นอากาศ เว้นแต่ได้รับอนุญาต เว้นแต่ได้รับความเห็นชอบจากผู้จัดการท่าอากาศยานก่อน');
+    bodyLines.push('การปฏิเสธนี้เป็นไปตามประกาศจังหวัด' + (rec ? ' ' + rec.th : '') + ' และพระราชบัญญัติการเดินอากาศ พ.ศ. 2497 มาตรา 59');
+    bodyLines.push('ผู้ยื่นคำขอมีสิทธิอุทธรณ์คั่งสั่งตามพระราชบัญญัติวิธีปฏิบัติราชการทางปกครอง พ.ศ. 2539 มาตรา 44 ภายใน 15 วันนับแต่วันได้รับการแจ้งคั่งสั่งนี้');
+    bodyLines.push('ด้วยความเคารพ');
+  }
+  var legal = legalBasis(d, inZone);
+  var html =
+    '<div style="font-family: \'Sarabun\', \'Tahoma\', sans-serif; padding: 18px; background:#fff; color:#111; max-width: 640px; margin: 0 auto;">' +
+    '<h3 style="text-align:center; margin:0 0 16px 0">' + (decision === 'allow' ? 'หนังสืออนุญาต' : 'หนังสือไม่ให้อนุญาต') + '</h3>' +
+    '<div style="text-align:right; font-size:13px; margin-bottom: 14px">ลงวันที่ ' + dateStr + '</div>' +
+    bodyLines.map(function (l) { return '<p style="font-size:13.5px; line-height:1.65; margin:4px 0; text-align:justify">' + l + '</p>'; }).join('') +
+    '<div class="section-title" style="color:#333">ฐานอำนาจและข้อกฎหมายอ้างอิง</div>' +
+    legal.map(function (l) { return '<div style="font-size:12.5px; line-height:1.55; margin:3px 0; color:#222">' + l + '</div>'; }).join('') +
+    '<div style="font-size:11px; color:#666; margin-top:12px; border-top:1px solid #ccc; padding-top:6px">เอกสารนี้เป็นร่างอัตโนมัติจากระบบ — ต้องตรวจสอบกับผู้มีอำนาจและที่ปรึกษากฎหมายก่อนใช้เป็นทางการ</div>' +
+    '</div>';
+  return html;
+}
+
+function openLetterModal(cfg) {
+  var modal = document.getElementById('letter-modal');
+  modal.style.display = 'flex';
+  var sel = document.getElementById('letter-decision');
+  sel.innerHTML = '';
+  if (cfg.hits.length > 0) {
+    sel.appendChild(new Option('ปฏิเสธ (ไม่ให้อนุญาต) — ติดเขตปลอดัยฯ', 'deny'));
+    sel.appendChild(new Option('อนุญาตแบบมีเงื่อนไข (ได้ความเห็นชอบท่าอากาศยาน)', 'allow'));
+    sel.value = 'deny';
+  } else {
+    sel.appendChild(new Option('อนุญาตตามเงื่อนไขประกาศจังหวัด', 'allow'));
+    sel.appendChild(new Option('ปฏิเสธ', 'deny'));
+    sel.value = 'allow';
+  }
+  sel.onchange = function () { updateLetter(cfg); };
+  document.getElementById('letter-regenerate').onclick = function () { updateLetter(cfg); };
+  document.getElementById('letter-print').onclick = function () {
+    var w = window.open('', '_blank');
+    w.document.write('<html><head><title>ร่างหนังสือ</title>' +
+      document.querySelector('link[href*="leaflet"]').outerHTML + '</head><body>' +
+      document.getElementById('letter-body').innerHTML + '</body></html>');
+    w.document.close(); w.focus(); w.print();
+  };
+  document.getElementById('letter-close').onclick = function () { modal.style.display = 'none'; };
+  updateLetter(cfg);
+}
+
+function updateLetter(cfg) {
+  document.getElementById('letter-body').innerHTML = renderLetter(cfg);
+}
+
+function wireLetterButtons() {
+  document.getElementById('letter-open').addEventListener('click', function () {
+    // generic letter without pin context — prompt for province manually
+    var provKey = selectedProvinceKey;
+    var rec = provKey ? PROV_REF.find(function (r) { return r.en === provKey; }) : null;
+    var d = provKey ? (PROV_DATA[provKey] || null) : null;
+    openLetterModal({ lat: null, lon: null, provKey: provKey, rec: rec, d: d, hits: [] });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Occurrence log + risk heatmap
+// ---------------------------------------------------------------------------
+
+function openOccurrenceForm(pt, provKey, rec, hits) {
+  var panel = document.getElementById('occurrence-panel');
+  var oc = document.getElementById('occurrence-form');
+  panel.style.display = 'block';
+  if (pt) {
+    document.getElementById('occ-lat').value = pt[0].toFixed(5);
+    document.getElementById('occ-lon').value = pt[1].toFixed(5);
+  }
+  oc.dataset.ctx = JSON.stringify({ provKey: provKey, rec: rec, hits: hits });
+}
+
+function saveOccurrence() {
+  var oc = document.getElementById('occurrence-form');
+  var lat = parseFloat(document.getElementById('occ-lat').value);
+  var lon = parseFloat(document.getElementById('occ-lon').value);
+  if (isNaN(lat) || isNaN(lon)) { alert('กรอกพิกัดให้ถูกต้อง'); return; }
+  var kind = document.getElementById('occ-kind').value;
+  var note = document.getElementById('occ-note').value;
+  var ctx = oc.dataset.ctx ? JSON.parse(oc.dataset.ctx) : {};
+  occurrences.push({
+    lat: lat, lon: lon, kind: kind,
+    date: document.getElementById('occ-date').value || new Date().toISOString().slice(0, 10),
+    note: note,
+    airportNear: (ctx.hits && ctx.hits.length) ? ctx.hits[0].icao + ' (' + ctx.hits[0].zoneType + ' ~' + ctx.hits[0].distKm.toFixed(1) + ' กม.)' : '',
+    provTh: ctx.rec ? ctx.rec.th : '',
+    ts: Date.now()
+  });
+  saveOccurrences();
+  oc.style.display = 'none';
+  document.getElementById('occurrence-panel').style.display = 'none';
+  updateHeatmap();
+  updateOccurrenceStats();
+}
+
+function updateHeatmap() {
+  if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
+  if (!document.getElementById('toggle-heat').checked || occurrences.length === 0) return;
+  var pts = occurrences.map(function (o) { return [o.lat, o.lon, o.kind === 'unauthorized' ? 3 : 1]; });
+  var maxVal = Math.max(2, Math.floor(occurrences.length * 0.4));
+  heatLayer = L.heatLayer(pts, { radius: 20, blur: 24, maxZoom: 13, max: maxVal }).addTo(map);
+}
+
+function updateOccurrenceStats() {
+  var el = document.getElementById('occurrence-stats');
+  if (occurrences.length === 0) {
+    el.innerHTML = '<div class="stat-empty">ยังไม่มีเหตุการณ์บันทึก — ใช้ปุ่ม "📝 บันทึกเป็นเหตุการณ์" บนแผงตรวจสอบ</div>';
+    return;
+  }
+  var byKind = {}, nearAirports = {};
+  occurrences.forEach(function (o) {
+    byKind[o.kind] = (byKind[o.kind] || 0) + 1;
+    if (o.airportNear) nearAirports[o.airportNear.split(' (')[0]] = (nearAirports[o.airportNear.split(' (')[0]] || 0) + 1;
+  });
+  var html = '<div class="stat-row"><span class="stat-label">รวมเหตุการณ์</span><span class="stat-value">' + occurrences.length + '</span></div>';
+  Object.keys(byKind).forEach(function (k) {
+    html += '<div class="stat-row"><span class="stat-label">' + (k === 'request' ? 'คำขออนุญาต' : 'ปล่อยไม่ได้รับอนุญาต') + '</span><span class="stat-value">' + byKind[k] + '</span></div>';
+  });
+  Object.keys(nearAirports).forEach(function (icao) {
+    html += '<div class="stat-row"><span class="stat-label">ใกล้ ' + icao + '</span><span class="stat-value">' + nearAirports[icao] + '</span></div>';
+  });
+  html += '<div class="stat-row"><span class="stat-label"><button class="tool-btn" id="occ-clear">ลบทั้งหมด</button></span><span></span></div>';
+  el.innerHTML = html;
+  var cl = document.getElementById('occ-clear');
+  if (cl) cl.addEventListener('click', function () {
+    if (confirm('ลบข้อมูลเหตุการณ์ทั้งหมด?')) {
+      occurrences = []; saveOccurrences();
+      updateHeatmap(); updateOccurrenceStats();
+    }
+  });
+}
+
+function wireOccurrenceForm() {
+  document.getElementById('occ-save').addEventListener('click', saveOccurrence);
+  document.getElementById('occ-cancel').addEventListener('click', function () {
+    document.getElementById('occurrence-form').style.display = 'none';
+    document.getElementById('occurrence-panel').style.display = 'none';
+  });
+  document.getElementById('toggle-heat').addEventListener('change', updateHeatmap);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +598,7 @@ function selectAirport(ap) {
 function buildRegionSelect() {
   var sel = document.getElementById('region-select');
   sel.appendChild(new Option('ทั้งประเทศ (ทุกภาค)', ''));
-  REGION_LIST.forEach(function (r) { sel.appendChild(new Option(r, r)); });
+  REGION_LIST.forEach(function (r) { var o = document.createElement('option'); o.value = r; o.text = r; sel.appendChild(o); });
   sel.addEventListener('change', filterProvinces);
 }
 
@@ -214,6 +645,10 @@ function showRegulationCard(rec) {
     card.innerHTML = '<div class="stat-empty">ไม่พบข้อมูลประกาศของจังหวัดนี้</div>';
     return;
   }
+  var docBtn = '';
+  if (d.docPath) {
+    docBtn = '<div class="card-row"><span class="card-label">ที่มา (เอกสาร)</span><span><a href="' + d.docPath + '" target="_blank" class="card-link">📄 เปิดเอกสารประกาศ PDF (เก็บในเว็บไซต์)</a></span></div>';
+  }
   card.innerHTML =
     '<div class="card-province">' + rec.th + ' <span class="card-region">' + rec.region + '</span></div>' +
     '<div class="card-title">' + (d.title || '') + '</div>' +
@@ -221,12 +656,55 @@ function showRegulationCard(rec) {
     (d.permit ? '<div class="card-row"><span class="card-label">เงื่อนไข</span><span>' + d.permit + '</span></div>' : '') +
     (d.applyDaysAdvance ? '<div class="card-row"><span class="card-label">ยื่นขอล่วงหน้า</span><span>≥ ' + d.applyDaysAdvance + ' วัน</span></div>' : '') +
     (d.airportNotify ? '<div class="card-row"><span class="card-label">เขตปลอดัยฯ / สนามบิน</span><span>' + d.airportNotify + '</span></div>' :
-      '<div class="card-row"><span class="card-label">เขตปลอดัยฯ / สนามบิน</span><span>ห้ามจุด/ปล่อยวัตถุขึ้นอากาศในรัศมี 10 กม. จากท่าอากาศยาน เว้นแต่ได้รับอนุญาต</span></div>') +
+      '<div class="card-row"><span class="card-label">เขตปลอดัยฯ / สนามบิน</span><span>ห้ามจด/ปล่อยวัตถุขึ้นอากาศในรัศมี 10 กม. จากท่าอากาศยาน เว้นแต่ได้รับอนุญาต</span></div>') +
     (d.festival ? '<div class="card-row"><span class="card-label">เทศกาล</span><span>' + d.festival + '</span></div>' : '') +
     (d.special ? '<div class="card-row"><span class="card-label">ข้อกำหนดพิเศษ</span><span>' + d.special + '</span></div>' : '') +
     (d.penalties ? '<div class="card-row"><span class="card-label">บทลงโทษ</span><span>' + d.penalties + '</span></div>' : '') +
-    (d.sourceUrl ? '<div class="card-row"><span class="card-label">ที่มา</span><span><a href="' + d.sourceUrl + '" target="_blank" class="card-link">เปิดเอกสารประกาศ</a></span></div>' : '') +
-    '<div class="card-note">อ้างอิง พ.ร.บ.การเดินอากาศ พ.ศ. 2497 และประกาศกระทรวงมหาดไทย — รายละเอียดจริงตามประกาศแต่ละจังหวัดที่เผยแพร่ในราชกิจจานุเบกษา</div>';
+    (d.gazetteRef ? '<div class="card-row"><span class="card-label">ราชกิจจานุเบกษา</span><span>' + d.gazetteRef + '</span></div>' : '') +
+    (d.sourceUrl ? '<div class="card-row"><span class="card-label">ที่มา (ลิงก์)</span><span><a href="' + d.sourceUrl + '" target="_blank" class="card-link">เปิดแหล่งที่มา</a></span></div>' : '') +
+    docBtn +
+    '<div class="card-note">อ้างอิง พ.ร.บ.การเดินอากาศ พ.ศ. 2497 และประกาศกระทรวงมหาดไทย — รายละเอียดจริงตามประกาศแต่ละจังหวัดที่แพร่หลายในราชกิจจานุเบกษา</div>' +
+    '<div class="card-row" style="border:none"><button class="tool-btn" id="check-this-province">📍 ตรวจสอบพิกัดในจังหวัดนี้</button></div>';
+  setTimeout(function () {
+    var btn = document.getElementById('check-this-province');
+    if (btn) btn.addEventListener('click', function () {
+      pinDropMode = true;
+      document.getElementById('pin-drop-btn').classList.add('active');
+      document.getElementById('pin-drop-btn').textContent = '✖ ยกเลิกโหมดปักหมุด';
+      map.getContainer().style.cursor = 'crosshair';
+      if (pinMarker) { pinMarker.remove(); pinMarker = null; }
+    });
+  }, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Airport list
+// ---------------------------------------------------------------------------
+
+function buildAirportList() {
+  var list = document.getElementById('airport-list');
+  var sorted = AIRPORTS.slice().sort(function (a, b) { return a.icao.localeCompare(b.icao); });
+  sorted.forEach(function (ap) {
+    var el = document.createElement('div');
+    el.className = 'airport-item';
+    el.dataset.icao = ap.icao;
+    el.innerHTML = '<span class="icao">' + ap.icao + '</span>' +
+      '<span class="name">' + ap.nameTh + '</span>' +
+      '<span class="prov">' + ap.provinceTh + '</span>';
+    el.addEventListener('click', function () { selectAirport(ap); });
+    list.appendChild(el);
+  });
+}
+
+function selectAirport(ap) {
+  drawAirportZones(ap);
+  map.setView([ap.lat, ap.lon], 11);
+  document.querySelectorAll('.airport-item').forEach(function (el) {
+    el.classList.toggle('active', el.dataset.icao === ap.icao);
+  });
+  document.getElementById('current-airport-label').textContent = ap.icao + ' — ' + ap.nameTh;
+  var rec = PROV_REF.find(function (r) { return r.en === ap.provinceEn; });
+  if (rec) { showRegulationCard(rec); }
 }
 
 // ---------------------------------------------------------------------------
@@ -249,19 +727,18 @@ function wireSearch() {
 
 function wireLayerToggles() {
   document.getElementById('toggle-lhz').addEventListener('change', function (e) {
-    airportLayer.eachLayer(function (l) {
-      if (l instanceof L.Circle) {
-        if (e.target.checked) { l.addTo(map); } else { l.removeFrom(map); }
-      }
-    });
+    if (pinMarker) { /* keep tool layers; zones redraw on select */ }
   });
-  document.getElementById('toggle-phz').addEventListener('change', function (e) {
-    airportLayer.eachLayer(function (l) {
-      if (l instanceof L.Polygon) {
-        if (e.target.checked) { l.addTo(map); } else { l.removeFrom(map); }
-      }
-    });
-  });
+  document.getElementById('toggle-phz').addEventListener('change', function (e) { /* PHZ checkbox; zones redraw on select */ });
+  // Redraw zones of selected airport on toggle
+  document.getElementById('toggle-lhz').addEventListener('change', redrawSelected);
+  document.getElementById('toggle-phz').addEventListener('change', redrawSelected);
+}
+
+var currentAirport = null;
+
+function redrawSelected() {
+  if (currentAirport) drawAirportZones(currentAirport);
 }
 
 // ---------------------------------------------------------------------------
@@ -279,10 +756,18 @@ function buildGeeNote() {
 // Boot
 // ---------------------------------------------------------------------------
 
+loadOccurrences();
 buildRegionSelect();
 filterProvinces();
 buildProvinceLayer();
 buildAirportList();
 wireSearch();
 wireLayerToggles();
+wirePinDrop();
+wireSimulation();
+wireLetterButtons();
+wireOccurrenceForm();
+updateOccurrenceStats();
+updateHeatmap();
 buildGeeNote();
+if (AIRPORTS.length) selectAirport(AIRPORTS[0]);
