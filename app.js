@@ -57,8 +57,8 @@ function pointInPoly(pt, poly) {
   var inside = false;
   for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     var xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
-    var intersect = ((yi > pt[1]) !== (yj > pt[1])) &&
-      (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi + 1e-12) + xi);
+    var intersect = ((yi > pt[0]) !== (yj > pt[0])) &&
+      (pt[1] < (xj - xi) * (pt[0] - yi) / (yj - yi + 1e-12) + xi);
     if (intersect) inside = !inside;
   }
   return inside;
@@ -198,6 +198,14 @@ function drawAirportZones(ap) {
     .addTo(zoneLayerGroup);
 }
 
+// Cross-track distance from pt to the great-circle axis at bearing brgDeg (km).
+function crossTrackKm(ap, pt, brgDeg) {
+  var angDist = haversineKm(ap, pt) / 6371.0;
+  var initBrg = bearingDeg(ap, pt) * Math.PI / 180;
+  var brg = brgDeg * Math.PI / 180;
+  var xt = Math.asin(Math.sin(angDist) * Math.sin(initBrg - brg));
+  return Math.abs(xt) * 6371.0;
+}
 // Test whether a point lies inside an airport's LHZ / PHZ bands.
 // Returns an array of { icao, zoneType, zoneLabel, distKm, rule } hits,
 // ordered by distance.
@@ -226,8 +234,8 @@ function checkClearance(pt) {
             // Band 1 is a corridor: width tapers w0..w1 with distance
             halfWidthKm = (band.w0 + (band.w1 - band.w0) * d / band.d1) / 2;
           }
-          var xDist = haversineKm([ap.lat, ap.lon], destPoint(ap.lat, ap.lon, b, d));
-          if (xDist < halfWidthKm) { hitBand = band; break; }
+          var xt = crossTrackKm([ap.lat, ap.lon], pt, b);
+          if (xt < halfWidthKm) { hitBand = band; break; }
         }
       });
       if (hitBand) {
@@ -244,8 +252,15 @@ function checkClearance(pt) {
 function findProvince(pt) {
   for (var i = 0; i < PROVINCES.features.length; i++) {
     var f = PROVINCES.features[i];
-    var coords = f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates[0][0] : f.geometry.coordinates[0];
-    if (pointInPoly(pt, coords)) return provinceNameKey(f.properties.NAME_1);
+    var polys = f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates : [f.geometry.coordinates];
+    var found = false;
+    polys.forEach(function (poly) {
+      if (found) return;
+      for (var r = 0; r < poly.length; r++) {
+        if (pointInPoly(pt, poly[r])) { found = true; return; }
+      }
+    });
+    if (found) return provinceNameKey(f.properties.NAME_1);
   }
   return null;
 }
