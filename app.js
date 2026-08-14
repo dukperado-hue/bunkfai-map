@@ -286,6 +286,7 @@ function wirePinDrop() {
 
 function runClearanceCheck(pt) {
   if (pinMarker) pinMarker.remove();
+  lastPin = pt;
   pinMarker = L.circleMarker(pt, { radius: 9, color: '#ffbe0b', weight: 3, fillColor: '#ffbe0b', fillOpacity: 0.9 }).addTo(toolLayerGroup);
   map.setView(pt, Math.max(map.getZoom(), 10));
 
@@ -346,39 +347,63 @@ function runClearanceCheck(pt) {
 // ---------------------------------------------------------------------------
 
 var BUNFAI_TYPES = {
-  'mun': { label: 'บั้งไฟหมื่น (≈ 10 กก.)', v0: 90, mass: 8, peakM: 600 },
-  'saen': { label: 'บั้งไฟแสน (≈ 100 กก.)', v0: 120, mass: 70, peakM: 1100 },
-  'lan': { label: 'บั้งไฟล้าน (≈ 1,000 กก.)', v0: 140, mass: 600, peakM: 1500 },
-  'plu': { label: 'พลุ / ตะไล', v0: 60, mass: 1, peakM: 300 },
-  'khom': { label: 'โคมลอย / โคมไฟ', v0: 15, mass: 0.3, peakM: 400 }
+  // mode 'rocket': black-powder motor with sustained thrust (thrust N, burn s).
+  // mode 'khom': buoyancy-driven lantern rising at riseV m/s for burnMin minutes.
+  'mun': { label: 'บั้งไฟหมื่น (≈ 30 กก.)', mode: 'rocket', v0: 25, mass: 30, thrust: 620, tburn: 2.4, peakM: 500 },
+  'saen': { label: 'บั้งไฟแสน (≈ 120 กก.)', mode: 'rocket', v0: 30, mass: 120, thrust: 2300, tburn: 5.0, peakM: 1100 },
+  'lan': { label: 'บั้งไฟล้าน (≈ 1,000 กก.)', mode: 'rocket', v0: 35, mass: 1000, thrust: 19000, tburn: 8.5, peakM: 3000 },
+  'plu': { label: 'พลุ / ตะไล', mode: 'rocket', v0: 60, mass: 1, thrust: 62, tburn: 1.2, peakM: 300 },
+  'khom': { label: 'โคมลอย / โคมไฟ', mode: 'khom', riseV: 3, burnMin: 45, fallV: 2, peakM: 1500 }
 };
 
-// Conservative ballistic simulation: gravity + quadratic drag,
-// peak via Euler integration (drag keeps peaks below vacuum estimate).
-function simulatePeak(typeKey) {
-  var t = BUNFAI_TYPES[typeKey];
-  var g = 9.81;
-  var rho = 1.1;              // air density kg/m3
-  var cd = 0.7;               // drag coeff (cylinder-ish)
-  var A = 0.02;               // cross-section m2 (conservative small)
-  var v = t.v0, z = 0, dz = 0.05, peak = 0;
-  while (v > 0.5 && z < 30000) {
-    var drag = 0.5 * rho * cd * A * v * v / t.mass;
-    v -= (g + drag) * dz;
-    z += v * dz;
+// Thrust-phase ballistic simulation for rockets: gravity + quadratic drag,
+// mass decreases during motor burn (~65% of initial mass is fuel), then
+// free-fall coast with drag. Peak via Euler integration at dt = 5 ms.
+function simRocketPeak(t) {
+  var g = 9.81, rho = 1.1, cd = 0.7, A = 0.02, dt = 0.005;
+  var v = t.v0, z = 0, tt = 0, mass = t.mass;
+  var rate = (0.65 * t.mass) / t.tburn; // fuel burn rate kg/s
+  var peak = 0;
+  while (tt < 600) {
+    var drag = 0.5 * rho * cd * A * v * v;
+    var a;
+    if (tt < t.tburn) {
+      a = (t.thrust - drag) / mass - g;
+      mass -= rate * dt;
+    } else {
+      a = -drag / Math.max(mass, 0.05) - g;
+    }
+    v += a * dt;
+    z += v * dt;
+    tt += dt;
     if (z > peak) peak = z;
-    if (z <= 0 && v <= 0) break;
+    if (v < 0 && z <= 0) break;
   }
   // Cap at the documented realistic peak for this type (no overestimate)
-  var cap = t.peakM * 1.1;
-  return Math.min(peak, cap);
+  return Math.min(peak, t.peakM * 1.1);
 }
 
-// Fallout distance: ascent is vertical, descent drifts with wind.
-function falloutKm(peakM) {
-  // descent from peak at terminal-ish fall (~15 m/s) + horizontal wind 5 m/s
-  var fallTime = peakM / 15;
-  return fallTime * 5 / 1000;
+// Buoyancy-driven rise for khom loy: ~3 m/s rise for up to burnMin minutes,
+// capped at the documented realistic ceiling (~1,500 m) since cold air aloft
+// and envelope cooling limit altitude.
+function simKhomPeak(t) {
+  return Math.min(t.riseV * t.burnMin * 60, t.peakM);
+}
+
+function simulatePeak(typeKey) {
+  var t = BUNFAI_TYPES[typeKey];
+  return t.mode === 'khom' ? simKhomPeak(t) : simRocketPeak(t);
+}
+
+// Fallout distance: rockets fall nearly vertically with wind drift during descent;
+// khom loy float down slowly, drifting kilometers with the wind.
+function falloutKm(typeKey) {
+  var t = BUNFAI_TYPES[typeKey];
+  var peak = simulatePeak(typeKey);
+  var wind = 5; // m/s horizontal wind
+  if (t.mode === 'khom') return Math.round((peak / (t.fallV * 1000) * wind + t.burnMin * wind / 60) * 10) / 10;
+  var fallTime = peak / 15; // descent at ~15 m/s terminal-ish speed
+  return fallTime * wind / 1000;
 }
 
 function simContextFor(hit, pt) {
@@ -397,11 +422,15 @@ function runSimulation() {
   var typeKey = document.getElementById('sim-type').value;
   var t = BUNFAI_TYPES[typeKey];
   var peak = Math.round(simulatePeak(typeKey));
-  var fallout = falloutKm(peak).toFixed(1);
+  var fallout = falloutKm(typeKey).toFixed(1);
+  var simInfo = t.mode === 'khom'
+    ? 'ลอยขึ้น ≈ ' + t.riseV + ' ม./วิ × ' + t.burnMin + ' นาที แล้วลอยลงด้วยลม'
+    : 'แรงผลัก ≈ ' + Math.round(t.thrust / t.mass) + ' × น้ำหนัก เผาไหม้ ' + t.tburn + ' วิ (มอเตอร์ถ่านดิน)—แนวทางจาก CAAT และสถิติบั๊งบึงไฟยโสธร';
   var doc = document.getElementById('sim-result');
   doc.innerHTML =
     '<div class="card-row"><span class="card-label">ความสูงสูงสุด (จำลอง)</span><span>≈ ' + peak + ' ม.</span></div>' +
-    '<div class="card-row"><span class="card-label">ระยะตก (ลม 5 ม./วิ)</span><span>≈ ' + fallout + ' กม.</span></div>' +
+    '<div class="card-row"><span class="card-label">ระยะตก/ล่องลอย (ลม 5 ม./วิ)</span><span>≈ ' + fallout + ' กม.</span></div>' +
+    '<div class="card-row"><span class="card-label">โหมดจำลอง</span><span>' + simInfo + '</span></div>' +
     '<div class="card-row"><span class="card-label">แนวร่อน 3° ที่ 3 กม.</span><span>เครื่องบิน ≈ 157 ม. / ที่ 8 กม. ≈ 419 ม.</span></div>' +
     '<div class="card-row"><span class="card-label">เกณฑ์เสี่ยง</span><span>Critical: วิถีทะลุแนวร่อนใน PHZ / High: ใน PHZ 3-8 กม. / Moderate: ใน LHZ / Low: นอกเขต</span></div>';
   // re-evaluate pin if present
@@ -418,6 +447,124 @@ function wireSimulation() {
   });
   sel.value = 'saen';
   document.getElementById('sim-run').addEventListener('click', runSimulation);
+}
+
+// ---------------------------------------------------------------------------
+// Petition generator: villagers request permission + notify agencies in one click
+// ---------------------------------------------------------------------------
+
+function populatePetitionSelect() {
+  var sel = document.getElementById('pet-type');
+  var keys = Object.keys(BUNFAI_TYPES);
+  keys.forEach(function (k) {
+    sel.appendChild(new Option(BUNFAI_TYPES[k].label, k));
+  });
+}
+
+function renderPetition() {
+  var today = new Date();
+  var thaiMonths = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+    'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
+  var dateStr = today.getDate() + ' ' + thaiMonths[today.getMonth()] + ' ' + (today.getFullYear() + 543);
+  var name = document.getElementById('pet-name').value || '[ชื่อ-นามสกุล]';
+  var addr = document.getElementById('pet-address').value || '[ที่อยู่บ้าน/หมู่บ้าน-ตำบล-อำเภอ]';
+  var eventName = document.getElementById('pet-event').value || '[ชื่อกิจกรรม]';
+  var eventDate = document.getElementById('pet-date').value || '[วันที่งาน]';
+  var typeKey = document.getElementById('pet-type').value;
+  var t = BUNFAI_TYPES[typeKey];
+  var useDistrict = document.getElementById('pet-ag-district').checked;
+  var useAirport = document.getElementById('pet-ag-airport').checked;
+  var usePolice = document.getElementById('pet-ag-police').checked;
+
+  // Auto-fill pin context if a pin was dropped
+  var lat = lastPin ? lastPin[0] : null;
+  var lon = lastPin ? lastPin[1] : null;
+  var hits = lat ? checkClearance([lat, lon]) : [];
+  var provKey = lat ? findProvince([lat, lon]) : null;
+  var rec = provKey ? PROV_REF.find(function (r) { return r.en === provKey; }) : null;
+  var d = provKey ? (PROV_DATA[provKey] || null) : null;
+  var simCtx = hits.length ? simContextFor(hits[0], [lat, lon]) : null;
+  var peak = Math.round(simulatePeak(typeKey));
+  var fallout = falloutKm(typeKey).toFixed(1);
+
+  var parts = [];
+  if (useDistrict && d) parts.push('🏛️ ที่ทำการอำเภอ/องค์กรปกครองส่วนท้องถิ่น — ' + (d.authority || 'ตามประกาศจังหวัด'));;
+  if (useAirport) parts.push('✈️ ผู้จัดการ/หอบังคับการบิน (ATC) — ' + (hits.length ? hits[0].icao : 'ท่าอากาศยานใกล้ชิด'));;
+  if (usePolice) parts.push('👮 สภ.ตำบล/อำเภอที่เกี่ยวข้อง (รับทราบ)');;
+
+  var html =
+    '<div style="font-family: \'Sarabun\', \'Tahoma\', sans-serif; padding: 18px; background:#fff; color:#111; max-width: 640px; margin: 0 auto;">' +
+    '<h3 style="text-align:center; margin:0 0 16px 0">คำร้องขออนุญาตจด/ปล่อยบั้งไฟ โคมลอย พลุ</h3>' +
+    '<div style="text-align:right; font-size:13px; margin-bottom: 14px">ลงวันที่ ' + dateStr + '</div>' +
+    '<p style="font-size:13.5px; line-height:1.65; text-align:justify">เรียน ' + (useDistrict && d ? 'นายอำเภอ/นายกองค์กรปกครองส่วนท้องถิ่น ' + (rec ? rec.th : '') : 'เจ้าหน้าที่ที่เกี่ยวข้อง') + ' (เรียนท่าน) และ/หรือ ผู้จัดการ/หอบังคับการบินท่าอากาศยาน' + (hits.length ? ' ' + hits[0].icao + ' ' + hits[0].nameTh : '') + '</p>' +
+    '<p style="font-size:13.5px; line-height:1.65; text-align:justify">ข้าพเจ้า ' + name + ' อาชีพ/ที่อยู่ ' + addr + ' ขอเรียนมาเพื่อยื่นคำร้องขออนุญาตจด/ปล่อยวัตถุขึ้นอากาศประเภท ' + t.label + ' ในการจัดกิจกรรม ' + eventName + ' ณ วันที่ ' + eventDate + '</p>';
+  if (lat !== null) {
+    html += '<p style="font-size:13.5px; line-height:1.65; text-align:justify">พิกัดตำแหน่งที่ขอ: ละติจูด ' + lat.toFixed(5) + ' ลองติจูด ' + lon.toFixed(5) +
+      (rec ? ' (ท้องที่ ' + rec.th + ' ' + rec.region + ')' : '') +
+      (hits.length ? ' — ตรวจสอบพบว่าอยู่ใน ' + hits[0].zoneLabel + ' ห่างจาก ' + hits[0].icao + ' ' + hits[0].distKm.toFixed(1) + ' กม.' : ' — ตรวจสอบระบบไม่พบว่าอยู่ในเขตปลอดัยทางการเดินอากาศ LHZ 10 กม./PHZ ของสนามบินใด') + '</p>';
+  }
+  html +=
+    '<p style="font-size:13.5px; line-height:1.65; text-align:justify">การจำลองวิถีระบบ: ความสูงสูงสุด ≈ ' + peak + ' ม. ระยะตก/ล่องลอย ≈ ' + fallout + ' กม. (ลม 5 ม./วิ)' +
+    (simCtx ? ' — ณ ตำแหน่งนี้ แนวร่อน 3° ของเครื่องบิน ที่ระยะ ' + simCtx.distKm.toFixed(1) + ' กม. ระดับเครื่องบิน ≈ ' + simCtx.gsAltM + ' ม.' : '') + '</p>' +
+    '<p style="font-size:13.5px; line-height:1.65; text-align:justify">ข้าพเจ้ารับปากจะปฏิบัติตามเงื่อนไขของประกาศประจำจังหวัด' + (rec ? ' ' + rec.th : '') + ' และพระราชบัญญัติการเดินอากาศ พ.ศ. 2497 มาตรา 59 อย่างเคร่งครัด และรับผิดชอบความเสียหายที่อาจเกิดขึ้นตามประมวลกฎหมายแพ่งและพาณิชย์ มาตรา 420</p>' +
+    '<p style="font-size:13.5px; line-height:1.65; text-align:justify">จึงใคร่ขอความกรุณาพิจารณาอนุญาต/รับทราบคำร้องนี้ เพื่อให้การจัดกิจกรรมเป็นไปโดยถูกต้องและปลอดภัย จึงเรียนมาเพื่อโปรดพิจารณา</p>' +
+    '<p style="font-size:13.5px; line-height:1.65; text-align:justify">ขอแสดงความเคารพ</p>' +
+    '<p style="font-size:13.5px; line-height:1.65; text-align:right">(ลงชื่อ) ' + name + '</p>' +
+    '<div class="section-title" style="color:#333">หน่วยงานที่ได้รับแจ้งตามคำร้องนี้</div>' +
+    parts.map(function (p) { return '<div style="font-size:12.5px; line-height:1.55; margin:3px 0; color:#222">• ' + p + '</div>'; }).join('') +
+    '<div style="font-size:11px; color:#666; margin-top:12px; border-top:1px solid #ccc; padding-top:6px">เอกสารนี้เป็นร่างอัตโนมัติจากระบบ — ต้องตรวจสอบความถูกต้องกับหน่วยงานปลายทางก่อนใช้เป็นทางการ</div>' +
+    '</div>';
+  return html;
+}
+
+function plainTextPetition() {
+  // Plain-text version for clipboard copy (strips innerHTML, reuses data)
+  var el = document.createElement('div');
+  el.innerHTML = renderPetition();
+  return el.innerText.replace(/\n{3,}/g, '\n\n');
+}
+
+var lastPin = null;
+
+function openPetitionModal(pt) {
+  if (pt) lastPin = pt;
+  populatePetitionSelect();
+  var modal = document.getElementById('petition-modal');
+  modal.style.display = 'flex';
+  var st = document.getElementById('pet-status');
+  if (lastPin) {
+    var hits = checkClearance(lastPin);
+    var provKey = findProvince(lastPin);
+    var rec = provKey ? PROV_REF.find(function (r) { return r.en === provKey; }) : null;
+    st.textContent = 'พิกัดจากหมุด: ' + lastPin[0].toFixed(5) + ', ' + lastPin[1].toFixed(5) +
+      (rec ? ' (' + rec.th + ')' : '') + (hits.length ? ' ⛔ ' + hits[0].zoneLabel + ' ' + hits[0].icao : ' ✅ นอกเขตปลอดัยฯ') +
+      ' — กรอกข้อมูลกิจกรรมแล้วกด "📝 สร้างคำร้อง"';
+  } else {
+    st.textContent = 'ยังไม่มีหมุดพิกัด — ควรดักหมุดตรวจสอบก่อน กรอกข้อมูลกิจกรรมได้เลย';
+  }
+  document.getElementById('pet-generate').onclick = function () {
+    document.getElementById('petition-body').innerHTML = renderPetition();
+    st.textContent = 'สร้างคำร้องแล้ว — กด "🖨 พิมพ์/บันทึก PDF" หรือ "📋 คัดลอกข้อความ" เพื่อส่งหน่วยงาน';
+  };
+  document.getElementById('pet-print').onclick = function () {
+    var w = window.open('', '_blank');
+    w.document.write('<html><head><title>คำร้องขออนุญาตจด/ปล่อยบั้งไฟ</title>' +
+      document.querySelector('link[href*="leaflet"]').outerHTML + '</head><body>' +
+      document.getElementById('petition-body').innerHTML + '</body></html>');
+    w.document.close(); w.focus(); w.print();
+  };
+  document.getElementById('pet-copy').onclick = function () {
+    navigator.clipboard.writeText(plainTextPetition()).then(function () {
+      st.textContent = 'คัดลอกข้อความแล้ว — วางในหนังสือ/อีเมล/แชทหน่วยงานได้ทันที';
+    });
+  };
+  document.getElementById('pet-close').onclick = function () { modal.style.display = 'none'; };
+}
+
+function wirePetitionButtons() {
+  document.getElementById('petition-open').addEventListener('click', function () {
+    openPetitionModal(lastPin || null);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -781,6 +928,7 @@ wireLayerToggles();
 wirePinDrop();
 wireSimulation();
 wireLetterButtons();
+wirePetitionButtons();
 wireOccurrenceForm();
 updateOccurrenceStats();
 updateHeatmap();
