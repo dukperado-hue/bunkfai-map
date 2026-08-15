@@ -489,9 +489,19 @@ function renderPetition() {
 
   var amphoeSel = document.getElementById('pet-amphoe');
   var amphoeTh = amphoeSel && amphoeSel.value ? document.querySelector('#pet-amphoe option:checked').text : '';
+  // Look up the real district office contact (yellowpages.co.th via amphoe_contacts.js)
+  var catm = null;
+  if (amphoeSel && amphoeSel.value && provKey) {
+    catm = getAmphoeCatm(provKey, amphoeSel.value);
+  }
+  var officeC = catm ? getAmphoeContact(catm) : null;
   var parts = [];
   var atcC = hits.length && typeof CONTACTS !== 'undefined' && CONTACTS.atc && CONTACTS.atc[hits[0].icao] ? CONTACTS.atc[hits[0].icao] : null;
-  if (useDistrict && d) parts.push('🏛️ ที่ทำการอำเภอ' + (amphoeTh ? ' ' + amphoeTh : '') + '/องค์กรปกครองส่วนท้องถิ่น — ' + (d.authority || 'ตามประกาศจังหวัด'));
+  if (useDistrict && d) {
+    var officeLine = '🏛️ ที่ทำการอำเภอ' + (amphoeTh ? ' ' + amphoeTh : '') + '/องค์กรปกครองส่วนท้องถิ่น — ' + (d.authority || 'ตามประกาศจังหวัด');
+    if (officeC && officeC.has_phone) officeLine += ' โทร ' + officeC.phone + (officeC.has_address ? ' (' + officeC.address + ')' : '');
+    parts.push(officeLine);
+  }
   if (useAirport) parts.push('✈️ ผู้จัดการ/หอบังคับการบิน (ATC)' + (hits.length ? ' ' + hits[0].icao + ' ' + hits[0].nameTh : '') + (atcC ? ' โทร ' + atcC.tel : ''));
   if (usePolice) parts.push('👮 สภ.ตำบล/อำเภอที่เกี่ยวข้อง (รับทราบ) — สายด่วนตำรวจ 191');
 
@@ -500,6 +510,7 @@ function renderPetition() {
     '<h3 style="text-align:center; margin:0 0 16px 0">คำร้องขออนุญาตจด/ปล่อยบั้งไฟ โคมลอย พลุ</h3>' +
     '<div style="text-align:right; font-size:13px; margin-bottom: 14px">ลงวันที่ ' + dateStr + '</div>' +
     '<p style="font-size:13.5px; line-height:1.65; text-align:justify">เรียน ' + (useDistrict && d ? 'นายอำเภอ' + (amphoeTh ? ' ' + amphoeTh : '') + (rec ? ' จังหวัด' + rec.th : '') + '/นายกองค์กรปกครองส่วนท้องถิ่น ' + (amphoeTh ? '' + amphoeTh : (rec ? rec.th : '')) : 'เจ้าหน้าที่ที่เกี่ยวข้อง') + ' (เรียนท่าน) และ/หรือ ผู้จัดการ/หอบังคับการบินท่าอากาศยาน' + (hits.length ? ' ' + hits[0].icao + ' ' + hits[0].nameTh : '') + '</p>' +
+    (officeC && officeC.has_phone && useDistrict ? '<p style="font-size:12px; line-height:1.5; margin:3px 0 10px 0; padding:6px 8px; background:#f0f4ff; border:1px solid #c9d6ff; border-radius:4px"><b>📞 ที่อยู่ที่ทำการอำเภอ (สำหรับจัดส่งคำร้อง)</b><br>ที่ทำการอำเภอ' + amphoeTh + ' — โทร ' + officeC.phone + (officeC.fax ? ' / โทรสาร ' + officeC.fax : '') + '<br>' + (officeC.has_address ? officeC.address : '') + '</p>' : '') +
     '<p style="font-size:13.5px; line-height:1.65; text-align:justify">ข้าพเจ้า ' + name + ' อาชีพ/ที่อยู่ ' + addr + ' ขอเรียนมาเพื่อยื่นคำร้องขออนุญาตจด/ปล่อยวัตถุขึ้นอากาศประเภท ' + t.label + ' ในการจัดกิจกรรม ' + eventName + ' ณ วันที่ ' + eventDate + '</p>';
   if (lat !== null) {
     html += '<p style="font-size:13.5px; line-height:1.65; text-align:justify">พิกัดตำแหน่งที่ขอ: ละติจูด ' + lat.toFixed(5) + ' ลองติจูด ' + lon.toFixed(5) +
@@ -517,6 +528,7 @@ function renderPetition() {
     parts.map(function (p) { return '<div style="font-size:12.5px; line-height:1.55; margin:3px 0; color:#222">• ' + p + '</div>'; }).join('') +
     (typeof CONTACTS !== 'undefined' && (atcC || true) ? ('<div class="section-title" style="color:#333; margin-top:10px">สำเนา: ช่องทางติดต่อหน่วยงาน (ข้อมูลสาธารณะ — โปรดตรวจสอบก่อนส่ง)</div>' +
       (atcC ? '<div style="font-size:12px; line-height:1.5; margin:3px 0; padding:6px 8px; background:#f0f4ff; border:1px solid #c9d6ff; border-radius:4px"><b>✈️ ' + atcC.unit + '</b><br>โทร: ' + atcC.tel + (atcC.fax ? ' / โทรสาร: ' + atcC.fax : '') + (atcC.email ? '<br>อีเมล: ' + atcC.email : '') + '<br>ที่อยู่: ' + atcC.address + '</div>' : '<div style="font-size:11.5px; color:#666; margin:3px 0">ไม่พบข้อมูลติดต่อหอบังคับการบินของสนามบินใกล้เคียง — สอบถามสายด่วน 191</div>') +
+      (officeC && officeC.has_phone ? '<div style="font-size:12px; line-height:1.5; margin:3px 0; padding:6px 8px; background:#fff3f0; border:1px solid #ffcfc2; border-radius:4px"><b>🏛️ ที่ทำการอำเภอ' + (amphoeTh ? ' ' + amphoeTh : '') + ' (จากสารบบ yellowpages.co.th — ตรวจสอบก่อนใช้)</b><br>โทร: ' + officeC.phone + (officeC.fax ? ' / โทรสาร: ' + officeC.fax : '') + (officeC.has_address ? '<br>ที่อยู่: ' + officeC.address : '') + (officeC.url ? '<br><a href="' + officeC.url + '" target="_blank" style="font-size:11px">แหล่งข้อมูล</a>' : '') + '</div>' : '') +
       (typeof CONTACTS !== 'undefined' && CONTACTS.aerothai ? '<div style="font-size:12px; line-height:1.5; margin:3px 0; padding:6px 8px; background:#f0fff4; border:1px solid #b7e4c7; border-radius:4px"><b>🛰️ สำเนาถึง: บริษัท วิทยุการบินแห่งประเทศไทย จำกัด (AeroThai)</b><br>โทร: ' + CONTACTS.aerothai.tel + ' / โทรสาร: ' + CONTACTS.aerothai.fax + '<br>ที่อยู่: ' + CONTACTS.aerothai.address + '<br>เว็บไซต์: ' + CONTACTS.aerothai.web + '</div>' : '') +
       '<div style="font-size:12px; line-height:1.5; margin:3px 0; padding:6px 8px; background:#fff7e6; border:1px solid #ffe0a3; border-radius:4px"><b>📞 สายด่วน (กรณีฉุกเฉิน/เหตุไม่ปลอดภัย)</b><br>' +
       '• สภ.ท้องที่ที่เกี่ยวข้อง — อำเภอ' + (amphoeTh ? ' ' + amphoeTh : '') + ': ติดต่อผ่านสายด่วน <b>191</b> หรือที่ทำการอำเภอ<br>' +
@@ -812,6 +824,16 @@ function getAmphoeInfo(provKey, amphoeEn) {
   return a || null;
 }
 
+function getAmphoeCatm(provKey, amphoeEn) {
+  var a = getAmphoeInfo(provKey, amphoeEn);
+  return (a && a.catm) ? String(a.catm) : null;
+}
+
+function getAmphoeContact(catm) {
+  if (!catm || !(window.AMPHOE_CONTACTS && AMPHOE_CONTACTS[catm])) return null;
+  return AMPHOE_CONTACTS[catm];
+}
+
 function showAmphoeCard(provKey, amphoeEn) {
   var card = document.getElementById('amphoe-card');
   var rec = PROV_REF.find(function (r) { return r.en === provKey; });
@@ -830,6 +852,16 @@ function showAmphoeCard(provKey, amphoeEn) {
   html += '<div class="card-row"><span class="card-label">จำนวนอำเภอ</span><span>' + list.length + ' อำเภอ/เขต (ใน' + rec.th + ')</span></div>';
   html += '<div class="card-row"><span class="card-label">ฐานอำนาจ</span><span>พ.ร.บ.การเดินอากาศ พ.ศ. 2497 ม.59 + ประกาศจังหวัด' + rec.th + '</span></div>';
   if (d && d.docPath) html += '<div class="card-row"><span class="card-label">เอกสาร</span><span><a href="' + d.docPath + '" target="_blank" class="card-link">📄 เปิดเอกสารประกาศ PDF</a></span></div>';
+  var c = getAmphoeContact(getAmphoeCatm(provKey, amphoeEn));
+  if (c) {
+    if (c.has_phone) {
+      html += '<div class="card-row"><span class="card-label">📞 ที่ทำการอำเภอ</span><span>โทร ' + c.phone + (c.fax ? ' / โทรสาร ' + c.fax : '') + ' — <a href="' + c.url + '" target="_blank" class="card-link">แหล่งข้อมูล</a></span></div>';
+    }
+    if (c.has_address) html += '<div class="card-row"><span class="card-label">ที่อยู่</span><span>' + c.address + '</span></div>';
+    if (!c.has_phone) html += '<div class="card-row"><span class="card-label">📞 ที่ทำการอำเภอ</span><span>ไม่พบเบอร์ในสารบบ — ใช้ศูนย์ดำรงธรรม <b>1567</b></span></div>';
+  } else {
+    html += '<div class="card-row"><span class="card-label">📞 ที่ทำการอำเภอ</span><span>ไม่พบข้อมูล — ใช้ศูนย์ดำรงธรรม <b>1567</b></span></div>';
+  }
   html += '<div class="card-note">การจด/ปล่อยบั๊งบึงไฟ โคมลอย พลุ ในท้องที่อำเภอ/เขตนี้ ให้เป็นไปตามเงื่อนไขของประกาศจังหวัดข้างต้น — ใช้เป็นข้อมูลประกอบการยื่นคำขอกับอำเภอ/อปท.</div>';
   html += '<div class="card-row" style="border:none"><button class="tool-btn" id="petition-from-amphoe">📮 ยื่นคำร้องแจ้งหน่วยงาน (จากอำเภอ/เขตนี้)</button></div>';
   card.innerHTML = html;
