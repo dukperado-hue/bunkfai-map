@@ -68,32 +68,48 @@ function drawFlightPaths(targetIcao) {
       var ext1 = destPoint(lat, lon, brg, halfLen + FP_EXTEND_KM);
       var ext2 = destPoint(lat, lon, recBrg, halfLen + FP_EXTEND_KM);
 
-      // Draw runway line (solid white)
+      // Waypoint: turn point at the end of extended approach path
+      var wp1 = destPoint(lat, lon, brg, halfLen + FP_EXTEND_KM + 5);
+      var wp2 = destPoint(lat, lon, recBrg, halfLen + FP_EXTEND_KM + 5);
+
+      // Draw runway line (solid blue)
       L.polyline([end1, end2], {
-        color: '#ffffff', weight: 3, opacity: 0.9,
+        color: '#0066ff', weight: 3, opacity: 0.9,
         dashArray: null
       }).addTo(flightPathLayerGroup);
 
-      // Draw extended approach paths (dashed, colored)
-      // Approach direction = the direction aircraft come from to land
-      // RWY 18 approach = from north (heading 182.69, so aircraft come FROM 002.69 direction)
+      // Draw extended approach paths (dashed, blue)
       L.polyline([ext2, end1], {  // approach from recBrg side
-        color: '#FFD700', weight: 2, opacity: 0.7,
+        color: '#0066ff', weight: 2, opacity: 0.8,
         dashArray: '8,6'
       }).addTo(flightPathLayerGroup);
 
       L.polyline([ext1, end2], {  // approach from brg side
-        color: '#FFD700', weight: 2, opacity: 0.7,
+        color: '#0066ff', weight: 2, opacity: 0.8,
         dashArray: '8,6'
       }).addTo(flightPathLayerGroup);
 
-      // Runway threshold markers
+      // Runway threshold markers (small blue dots)
       [end1, end2].forEach(function(pt) {
         L.circleMarker(pt, {
-          radius: 3, color: '#FFD700', weight: 1,
-          fillColor: '#FFD700', fillOpacity: 0.8
+          radius: 3, color: '#0066ff', weight: 1,
+          fillColor: '#0066ff', fillOpacity: 0.9
         }).addTo(flightPathLayerGroup);
       });
+
+      // Waypoint markers (larger circles at turn points)
+      var runwayLabel = ap.icao + ' ' + rw.desig;
+      L.circleMarker(wp2, {
+        radius: 5, color: '#0044cc', weight: 2,
+        fillColor: '#0088ff', fillOpacity: 0.8
+      }).bindTooltip(runwayLabel, { permanent: false, direction: 'top' })
+        .addTo(flightPathLayerGroup);
+
+      L.circleMarker(wp1, {
+        radius: 5, color: '#0044cc', weight: 2,
+        fillColor: '#0088ff', fillOpacity: 0.8
+      }).bindTooltip(runwayLabel + ' (recip)', { permanent: false, direction: 'top' })
+        .addTo(flightPathLayerGroup);
     });
   });
 }
