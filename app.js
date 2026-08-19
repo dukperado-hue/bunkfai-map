@@ -99,6 +99,21 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 var provinceLayer = null;
 var zoneLayerGroup = L.layerGroup().addTo(map);
 var toolLayerGroup = L.layerGroup().addTo(map);
+var flightPathLayerGroup = L.layerGroup();
+
+function toggleFlightPaths(show) {
+  if (show) {
+    if (!map.hasLayer(flightPathLayerGroup)) {
+      flightPathLayerGroup.addTo(map);
+    }
+    if (flightPathLayerGroup.getLayers().length === 0) {
+      drawFlightPaths();
+    }
+  } else {
+    map.removeLayer(flightPathLayerGroup);
+    flightPathLayerGroup.clearLayers();
+  }
+}
 var pinMarker = null;
 var selectedProvinceKey = null;
 var pinDropMode = false;

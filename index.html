@@ -142,6 +142,8 @@
       <span class="swatch" style="background:#e31a1c;opacity:.7"></span> <span id="label-phz">แนวขึ้น-ลงเครื่องบิน (PHZ แบบ Band)</span></label>
     <label class="toggle-row"><input type="checkbox" id="toggle-heat">
       <span class="swatch" style="background:#ffbe0b"></span> <span>Heatmap จุดเสี่ยง (จาก Log)</span></label>
+    <label class="toggle-row"><input type="checkbox" id="toggle-fp" onchange="toggleFlightPaths(this.checked)">
+      <span class="swatch" style="background:#FFD700;opacity:.8;border:1px solid #FFD700"></span> <span>แนวบินจริง (Flight Path จาก AIP CAAT)</span></label>
     <div id="current-airport-label">—</div>
 
     <div class="section-title">📄 ร่างหนังสือราชการ (Letter Generator)</div>
@@ -233,6 +235,7 @@
 <script src="amphoes.js"></script>
 <script src="amphoe_contacts.js?v=20260815c"></script>
 <script src="contacts.js?v=20260815a"></script>
-<script src="app.js?v=20260815f"></script>
+<script src="flight_paths.js?v=20260819d"></script>
+<script src="app.js?v=20260819d"></script>
 </body>
 </html>
